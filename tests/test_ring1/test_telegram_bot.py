@@ -23,10 +23,11 @@ from ring1.telegram_bot import (
 # ---------------------------------------------------------------------------
 
 class _BotHandler(http.server.BaseHTTPRequestHandler):
-    """Mock Telegram Bot API that handles getUpdates + sendMessage."""
+    """Mock Telegram Bot API that handles getUpdates + sendMessage + answerCallbackQuery."""
 
     updates_queue: list[dict] = []
     sent_messages: list[dict] = []
+    callback_answers: list[dict] = []
     status_code: int = 200
 
     def do_POST(self):
@@ -41,6 +42,9 @@ class _BotHandler(http.server.BaseHTTPRequestHandler):
         elif path.endswith("/sendMessage"):
             _BotHandler.sent_messages.append(body)
             resp_body = {"ok": True, "result": {"message_id": 1}}
+        elif path.endswith("/answerCallbackQuery"):
+            _BotHandler.callback_answers.append(body)
+            resp_body = {"ok": True, "result": True}
         else:
             resp_body = {"ok": False}
 
@@ -60,6 +64,7 @@ def _make_server():
     thread.start()
     _BotHandler.updates_queue = []
     _BotHandler.sent_messages = []
+    _BotHandler.callback_answers = []
     _BotHandler.status_code = 200
     return server, port
 
@@ -70,6 +75,21 @@ def _make_update(text: str, chat_id: str = "12345", update_id: int = 1) -> dict:
         "message": {
             "text": text,
             "chat": {"id": int(chat_id)},
+        },
+    }
+
+
+def _make_callback_update(
+    data: str, chat_id: str = "12345", update_id: int = 1, callback_id: str = "cb-1"
+) -> dict:
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": callback_id,
+            "data": data,
+            "message": {
+                "chat": {"id": int(chat_id)},
+            },
         },
     }
 
@@ -765,14 +785,27 @@ class TestSkillCommand:
         finally:
             server.shutdown()
 
-    def test_skill_no_args(self, tmp_path, monkeypatch):
+    def test_skill_no_args_empty_store(self, tmp_path, monkeypatch):
         server, port = _make_server()
         try:
             from ring0.skill_store import SkillStore
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.state.skill_store = SkillStore(tmp_path / "skills.db")
             reply = bot._handle_command("/skill")
-            assert "usage" in reply.lower()
+            assert reply == "No skills saved yet."
+        finally:
+            server.shutdown()
+
+    def test_skill_no_args_shows_menu(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.skill_store import SkillStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            ss = SkillStore(tmp_path / "skills.db")
+            ss.add("summarize", "Summarize text", "Please summarize")
+            bot.state.skill_store = ss
+            reply = bot._handle_command("/skill")
+            assert reply is None  # keyboard sent directly
         finally:
             server.shutdown()
 
@@ -845,3 +878,243 @@ class TestTaskDataclass:
         t2 = Task(text="b", chat_id="2")
         # IDs should be different (based on time)
         assert t1.task_id != t2.task_id or True  # may be same in fast runs
+
+
+class TestRunCommandMenu:
+    """Test /run without arguments shows inline keyboard."""
+
+    def test_run_no_args_shows_keyboard(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.skill_store import SkillStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            ss = SkillStore(tmp_path / "skills.db")
+            ss.add("dashboard", "Dashboard skill", "Run dashboard")
+            ss.add("analyzer", "Analyzer skill", "Run analyzer")
+            bot.state.skill_store = ss
+            bot.state.skill_runner = MagicMock()
+
+            result = bot._handle_command("/run")
+            assert result is None  # self-sent
+            assert len(_BotHandler.sent_messages) == 1
+            msg = _BotHandler.sent_messages[0]
+            assert msg["text"] == "Select a skill to run:"
+            markup = json.loads(msg["reply_markup"])
+            names = [row[0]["text"] for row in markup["inline_keyboard"]]
+            assert "dashboard" in names
+            assert "analyzer" in names
+            # callback_data uses run: prefix
+            cb_data = [row[0]["callback_data"] for row in markup["inline_keyboard"]]
+            assert "run:dashboard" in cb_data
+            assert "run:analyzer" in cb_data
+        finally:
+            server.shutdown()
+
+    def test_run_no_args_no_skills(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.skill_store import SkillStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            bot.state.skill_store = SkillStore(tmp_path / "skills.db")
+            bot.state.skill_runner = MagicMock()
+            result = bot._handle_command("/run")
+            assert result == "No skills saved yet."
+        finally:
+            server.shutdown()
+
+    def test_run_with_name_still_works(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.skill_store import SkillStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            ss = SkillStore(tmp_path / "skills.db")
+            ss.add("dash", "Dash", "template", source_code="print('hi')")
+            bot.state.skill_store = ss
+            sr = MagicMock()
+            sr.run.return_value = (123, "Started dash (PID 123)")
+            bot.state.skill_runner = sr
+            result = bot._handle_command("/run dash")
+            assert result is not None
+            assert "Started" in result
+        finally:
+            server.shutdown()
+
+
+class TestSkillCommandMenu:
+    """Test /skill without arguments shows inline keyboard."""
+
+    def test_skill_no_args_shows_keyboard(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.skill_store import SkillStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            ss = SkillStore(tmp_path / "skills.db")
+            ss.add("summarize", "Summarize text", "Please summarize")
+            bot.state.skill_store = ss
+
+            result = bot._handle_command("/skill")
+            assert result is None
+            assert len(_BotHandler.sent_messages) == 1
+            msg = _BotHandler.sent_messages[0]
+            assert msg["text"] == "Select a skill:"
+            markup = json.loads(msg["reply_markup"])
+            assert markup["inline_keyboard"][0][0]["text"] == "summarize"
+            assert markup["inline_keyboard"][0][0]["callback_data"] == "skill:summarize"
+        finally:
+            server.shutdown()
+
+    def test_skill_no_args_no_skills(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.skill_store import SkillStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            bot.state.skill_store = SkillStore(tmp_path / "skills.db")
+            result = bot._handle_command("/skill")
+            assert result == "No skills saved yet."
+        finally:
+            server.shutdown()
+
+    def test_skill_with_name_still_works(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.skill_store import SkillStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            ss = SkillStore(tmp_path / "skills.db")
+            ss.add("summarize", "Summarize text", "Please summarize: {{text}}")
+            bot.state.skill_store = ss
+            result = bot._handle_command("/skill summarize")
+            assert result is not None
+            assert "summarize" in result
+        finally:
+            server.shutdown()
+
+
+class TestCallbackQuery:
+    """Test callback_query handling (authorization + dispatch)."""
+
+    def test_callback_query_authorized(self, tmp_path, monkeypatch):
+        update = _make_callback_update("skill:test", chat_id="12345")
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            assert bot._is_authorized(update) is True
+        finally:
+            server.shutdown()
+
+    def test_callback_query_unauthorized(self, tmp_path, monkeypatch):
+        update = _make_callback_update("skill:test", chat_id="99999")
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            assert bot._is_authorized(update) is False
+        finally:
+            server.shutdown()
+
+    def test_handle_callback_run(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.skill_store import SkillStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            ss = SkillStore(tmp_path / "skills.db")
+            ss.add("dash", "Dashboard", "template", source_code="print('hi')")
+            bot.state.skill_store = ss
+            sr = MagicMock()
+            sr.run.return_value = (42, "Started dash (PID 42)")
+            bot.state.skill_runner = sr
+
+            reply = bot._handle_callback("run:dash")
+            assert "Started" in reply
+            sr.run.assert_called_once_with("dash", "print('hi')")
+        finally:
+            server.shutdown()
+
+    def test_handle_callback_skill(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.skill_store import SkillStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            ss = SkillStore(tmp_path / "skills.db")
+            ss.add("summarize", "Summarize text", "Please summarize: {{text}}")
+            bot.state.skill_store = ss
+
+            reply = bot._handle_callback("skill:summarize")
+            assert "summarize" in reply
+            assert "Summarize text" in reply
+        finally:
+            server.shutdown()
+
+    def test_handle_callback_unknown(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            reply = bot._handle_callback("bogus:data")
+            assert "Unknown" in reply
+        finally:
+            server.shutdown()
+
+    def test_handle_callback_run_not_found(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.skill_store import SkillStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            bot.state.skill_store = SkillStore(tmp_path / "skills.db")
+            bot.state.skill_runner = MagicMock()
+            reply = bot._handle_callback("run:nonexistent")
+            assert "not found" in reply.lower()
+        finally:
+            server.shutdown()
+
+    def test_end_to_end_callback(self, tmp_path, monkeypatch):
+        """Full loop: callback_query update → answerCallbackQuery + reply."""
+        server, port = _make_server()
+        try:
+            from ring0.skill_store import SkillStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            ss = SkillStore(tmp_path / "skills.db")
+            ss.add("dash", "Dashboard", "template", source_code="print('ok')")
+            bot.state.skill_store = ss
+            sr = MagicMock()
+            sr.run.return_value = (99, "Started dash (PID 99)")
+            bot.state.skill_runner = sr
+
+            _BotHandler.updates_queue = [
+                _make_callback_update("run:dash", chat_id="12345", callback_id="cb-42"),
+            ]
+
+            thread = start_bot_thread(bot)
+            deadline = time.time() + 5
+            while time.time() < deadline and not _BotHandler.sent_messages:
+                time.sleep(0.1)
+
+            # answerCallbackQuery was called
+            assert len(_BotHandler.callback_answers) >= 1
+            assert _BotHandler.callback_answers[0]["callback_query_id"] == "cb-42"
+
+            # Reply was sent
+            assert len(_BotHandler.sent_messages) >= 1
+            assert "Started" in _BotHandler.sent_messages[0]["text"]
+
+            bot.stop()
+            thread.join(timeout=5)
+        finally:
+            server.shutdown()
+
+    def test_unauthorized_callback_ignored(self, tmp_path, monkeypatch):
+        """Callback from wrong chat_id should not generate a reply."""
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            _BotHandler.updates_queue = [
+                _make_callback_update("run:x", chat_id="99999"),
+            ]
+
+            thread = start_bot_thread(bot)
+            time.sleep(1)
+
+            assert len(_BotHandler.sent_messages) == 0
+            assert len(_BotHandler.callback_answers) == 0
+
+            bot.stop()
+            thread.join(timeout=5)
+        finally:
+            server.shutdown()

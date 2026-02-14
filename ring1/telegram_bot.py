@@ -155,10 +155,31 @@ class TelegramBot:
             "parse_mode": "Markdown",
         })
 
+    def _send_message_with_keyboard(self, text: str, buttons: list[list[dict]]) -> None:
+        """Send a message with an inline keyboard (fire-and-forget).
+
+        *buttons* is a list of rows, each row a list of dicts with
+        ``text`` and ``callback_data`` keys.
+        """
+        self._api_call("sendMessage", {
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "reply_markup": json.dumps({"inline_keyboard": buttons}),
+        })
+
+    def _answer_callback_query(self, callback_query_id: str) -> None:
+        """Acknowledge a callback query so Telegram stops showing a spinner."""
+        self._api_call("answerCallbackQuery", {
+            "callback_query_id": callback_query_id,
+        })
+
     def _is_authorized(self, update: dict) -> bool:
         """Check if the update comes from the authorized chat."""
-        msg = update.get("message", {})
-        chat = msg.get("chat", {})
+        if "callback_query" in update:
+            chat = update["callback_query"].get("message", {}).get("chat", {})
+        else:
+            chat = update.get("message", {}).get("chat", {})
         return str(chat.get("id", "")) == self.chat_id
 
     # -- command handlers --
@@ -329,14 +350,22 @@ class TelegramBot:
             lines.append(f"- *{s['name']}*: {s['description']} (used {s['usage_count']}x)")
         return "\n".join(lines)
 
-    def _cmd_skill(self, full_text: str) -> str:
-        """Show skill details: /skill <name>."""
+    def _cmd_skill(self, full_text: str) -> str | None:
+        """Show skill details: /skill <name>.  No args → inline keyboard."""
         ss = self.state.skill_store
         if not ss:
             return "Skill store not available."
         parts = full_text.strip().split(None, 1)
         if len(parts) < 2 or not parts[1].strip():
-            return "Usage: /skill <name>\nExample: /skill summarize"
+            skills = ss.get_active(20)
+            if not skills:
+                return "No skills saved yet."
+            buttons = [
+                [{"text": s["name"], "callback_data": f"skill:{s['name']}"}]
+                for s in skills
+            ]
+            self._send_message_with_keyboard("Select a skill:", buttons)
+            return None
         name = parts[1].strip()
         skill = ss.get_by_name(name)
         if not skill:
@@ -353,8 +382,8 @@ class TelegramBot:
         ]
         return "\n".join(lines)
 
-    def _cmd_run(self, full_text: str) -> str:
-        """Start a skill: /run <name>."""
+    def _cmd_run(self, full_text: str) -> str | None:
+        """Start a skill: /run <name>.  No args → inline keyboard."""
         sr = self.state.skill_runner
         if not sr:
             return "Skill runner not available."
@@ -364,7 +393,15 @@ class TelegramBot:
 
         parts = full_text.strip().split(None, 1)
         if len(parts) < 2 or not parts[1].strip():
-            return "Usage: /run <skill\\_name>\nExample: /run market\\_analysis\\_dashboard"
+            skills = ss.get_active(20)
+            if not skills:
+                return "No skills saved yet."
+            buttons = [
+                [{"text": s["name"], "callback_data": f"run:{s['name']}"}]
+                for s in skills
+            ]
+            self._send_message_with_keyboard("Select a skill to run:", buttons)
+            return None
         name = parts[1].strip()
 
         skill = ss.get_by_name(name)
@@ -418,6 +455,50 @@ class TelegramBot:
         self.state.task_queue.put(task)
         self.state.p0_event.set()  # wake sentinel for P0 scheduling
         return f"Got it — processing your request ({task.task_id})..."
+
+    def _handle_callback(self, data: str) -> str:
+        """Handle an inline keyboard callback by prefix.
+
+        ``data`` format: ``run:<name>`` or ``skill:<name>``.
+        Returns a text reply.
+        """
+        if data.startswith("run:"):
+            name = data[4:]
+            sr = self.state.skill_runner
+            if not sr:
+                return "Skill runner not available."
+            ss = self.state.skill_store
+            if not ss:
+                return "Skill store not available."
+            skill = ss.get_by_name(name)
+            if not skill:
+                return f"Skill '{name}' not found."
+            source_code = skill.get("source_code", "")
+            if not source_code:
+                return f"Skill '{name}' has no source code."
+            pid, msg = sr.run(name, source_code)
+            ss.update_usage(name)
+            return msg
+        if data.startswith("skill:"):
+            name = data[6:]
+            ss = self.state.skill_store
+            if not ss:
+                return "Skill store not available."
+            skill = ss.get_by_name(name)
+            if not skill:
+                return f"Skill '{name}' not found."
+            lines = [
+                f"*Skill: {skill['name']}*",
+                f"Description: {skill['description']}",
+                f"Source: {skill['source']}",
+                f"Used: {skill['usage_count']} times",
+                f"Active: {'Yes' if skill['active'] else 'No'}",
+                "",
+                "Prompt template:",
+                f"```\n{skill['prompt_template']}\n```",
+            ]
+            return "\n".join(lines)
+        return "Unknown action."
 
     # -- dispatch --
 
@@ -477,13 +558,25 @@ class TelegramBot:
                         if not self._is_authorized(update):
                             log.debug("Ignoring unauthorized update")
                             continue
+
+                        # --- callback_query (inline keyboard press) ---
+                        cb = update.get("callback_query")
+                        if cb:
+                            self._answer_callback_query(str(cb["id"]))
+                            reply = self._handle_callback(cb.get("data", ""))
+                            if reply:
+                                self._send_reply(reply)
+                            continue
+
+                        # --- regular message ---
                         msg = update.get("message", {})
                         text = msg.get("text", "")
                         if not text:
                             continue
                         msg_chat_id = str(msg.get("chat", {}).get("id", ""))
                         reply = self._handle_command(text, chat_id=msg_chat_id)
-                        self._send_reply(reply)
+                        if reply is not None:
+                            self._send_reply(reply)
                     except Exception:
                         log.debug("Error handling update", exc_info=True)
             except Exception:
