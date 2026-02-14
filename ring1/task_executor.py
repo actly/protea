@@ -13,7 +13,6 @@ Pure stdlib (threading, queue, logging).
 
 from __future__ import annotations
 
-import json
 import logging
 import pathlib
 import queue
@@ -21,7 +20,7 @@ import threading
 import time
 
 from ring1.llm_client import ClaudeClient, LLMError
-from ring1.web_tools import web_fetch, web_search
+from ring1.tool_registry import ToolRegistry
 
 log = logging.getLogger("protea.task_executor")
 
@@ -33,81 +32,33 @@ You are helpful and concise.  Answer the user's question or perform the requeste
 analysis.  You have context about your current state (generation, survival, code).
 Keep responses under 3500 characters so they fit in a Telegram message.
 
-You have access to web tools:
-- web_search: Search the web using DuckDuckGo. Use this when the user asks you to
-  research, look up, or find information about something on the internet.
-- web_fetch: Fetch and read the content of a specific URL. Use this to read a page
-  found via web_search for more detail.
+You have access to the following tools:
 
-Use these tools when the user's request requires current information from the web.
-Do NOT use them for questions you can answer from your training data alone.
+Web tools:
+- web_search: Search the web using DuckDuckGo. Use for research or lookup tasks.
+- web_fetch: Fetch and read the content of a specific URL.
+
+File tools:
+- read_file: Read a file's contents (with line numbers, offset, limit).
+- write_file: Write content to a file (creates parent dirs if needed).
+- edit_file: Search-and-replace edit on a file (old_string must be unique).
+- list_dir: List files and subdirectories.
+
+Shell tool:
+- exec: Execute a shell command. Dangerous commands are blocked.
+
+Message tool:
+- message: Send a progress update to the user during multi-step work.
+
+Background tool:
+- spawn: Start a long-running background task. Results are sent via Telegram when done.
+
+Use web tools when the user's request requires current information from the web.
+Use file/shell tools when the user asks to read, modify, or explore files and code.
+Use the message tool to keep the user informed during long operations.
+Use spawn for tasks that may take a long time (complex analysis, multi-file operations).
+Do NOT use tools for questions you can answer from your training data alone.
 """
-
-# ---------------------------------------------------------------------------
-# Web tool definitions for Claude API tool_use
-# ---------------------------------------------------------------------------
-
-WEB_TOOLS: list[dict] = [
-    {
-        "name": "web_search",
-        "description": (
-            "Search the web via DuckDuckGo.  Returns a list of results, each "
-            "with title, url, and snippet.  Use for research or lookup tasks."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query.",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of results (default 5).",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "web_fetch",
-        "description": (
-            "Fetch a URL and extract its text content.  Use to read a specific "
-            "web page for detailed information."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "The URL to fetch.",
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "description": "Maximum characters to return (default 5000).",
-                },
-            },
-            "required": ["url"],
-        },
-    },
-]
-
-
-def _execute_tool(name: str, tool_input: dict) -> str:
-    """Dispatch a tool call to the appropriate web_tools function."""
-    if name == "web_search":
-        results = web_search(
-            query=tool_input["query"],
-            max_results=tool_input.get("max_results", 5),
-        )
-        return json.dumps(results, ensure_ascii=False)
-    elif name == "web_fetch":
-        return web_fetch(
-            url=tool_input["url"],
-            max_chars=tool_input.get("max_chars", 5000),
-        )
-    else:
-        return f"Unknown tool: {name}"
 
 P1_SYSTEM_PROMPT = """\
 You are Protea, a self-evolving artificial life agent.  Your owner has been
@@ -182,11 +133,13 @@ class TaskExecutor:
         client: ClaudeClient,
         ring2_path: pathlib.Path,
         reply_fn,
+        registry: ToolRegistry | None = None,
         memory_store=None,
         skill_store=None,
         p1_enabled: bool = False,
         p1_idle_threshold_sec: int = 600,
         p1_check_interval_sec: int = 60,
+        max_tool_rounds: int = 10,
     ) -> None:
         """
         Args:
@@ -194,21 +147,25 @@ class TaskExecutor:
             client: ClaudeClient instance for LLM calls.
             ring2_path: Path to ring2 directory (for reading source).
             reply_fn: Callable(text: str) -> None to send Telegram reply.
+            registry: ToolRegistry for tool dispatch.  None = no tools.
             memory_store: Optional MemoryStore for experiential memories.
             skill_store: Optional SkillStore for reusable skills.
             p1_enabled: Whether P1 autonomous tasks are enabled.
             p1_idle_threshold_sec: Seconds of idle before triggering P1.
             p1_check_interval_sec: Minimum seconds between P1 checks.
+            max_tool_rounds: Maximum LLM tool-call round-trips.
         """
         self.state = state
         self.client = client
         self.ring2_path = ring2_path
         self.reply_fn = reply_fn
+        self.registry = registry
         self.memory_store = memory_store
         self.skill_store = skill_store
         self.p1_enabled = p1_enabled
         self.p1_idle_threshold_sec = p1_idle_threshold_sec
         self.p1_check_interval_sec = p1_check_interval_sec
+        self.max_tool_rounds = max_tool_rounds
         self._running = True
         self._last_p0_time: float = time.time()
         self._last_p1_check: float = 0.0
@@ -257,12 +214,19 @@ class TaskExecutor:
             context = _build_task_context(snap, ring2_source, memories=memories, skills=skills)
             user_message = f"{context}\n\n## User Request\n{task.text}"
 
-            # LLM call (with web tool support)
+            # LLM call with tool registry
             try:
-                response = self.client.send_message_with_tools(
-                    TASK_SYSTEM_PROMPT, user_message,
-                    tools=WEB_TOOLS, tool_executor=_execute_tool,
-                )
+                if self.registry:
+                    response = self.client.send_message_with_tools(
+                        TASK_SYSTEM_PROMPT, user_message,
+                        tools=self.registry.get_schemas(),
+                        tool_executor=self.registry.execute,
+                        max_rounds=self.max_tool_rounds,
+                    )
+                else:
+                    response = self.client.send_message(
+                        TASK_SYSTEM_PROMPT, user_message,
+                    )
             except LLMError as exc:
                 log.error("Task LLM error: %s", exc)
                 response = f"Sorry, I couldn't process that request: {exc}"
@@ -396,10 +360,17 @@ class TaskExecutor:
             user_message = f"{context}\n\n## Autonomous Task\n{task_desc}"
 
             try:
-                response = self.client.send_message_with_tools(
-                    TASK_SYSTEM_PROMPT, user_message,
-                    tools=WEB_TOOLS, tool_executor=_execute_tool,
-                )
+                if self.registry:
+                    response = self.client.send_message_with_tools(
+                        TASK_SYSTEM_PROMPT, user_message,
+                        tools=self.registry.get_schemas(),
+                        tool_executor=self.registry.execute,
+                        max_rounds=self.max_tool_rounds,
+                    )
+                else:
+                    response = self.client.send_message(
+                        TASK_SYSTEM_PROMPT, user_message,
+                    )
             except LLMError as exc:
                 log.error("P1 task LLM error: %s", exc)
                 response = f"Error: {exc}"
@@ -456,14 +427,43 @@ def create_executor(
         model=config.claude_model,
         max_tokens=config.claude_max_tokens,
     )
-    return TaskExecutor(
+
+    # Build tool registry with subagent support
+    from ring1.subagent import SubagentManager
+    from ring1.tools import create_default_registry
+
+    workspace = getattr(config, "workspace_path", ".") or "."
+    shell_timeout = getattr(config, "shell_timeout", 30)
+    max_tool_rounds = getattr(config, "max_tool_rounds", 10)
+
+    # Create subagent manager (needs registry, so we build in two steps)
+    base_registry = create_default_registry(
+        workspace_path=workspace,
+        shell_timeout=shell_timeout,
+        reply_fn=reply_fn,
+    )
+    subagent_mgr = SubagentManager(client, base_registry, reply_fn)
+
+    # Rebuild registry with spawn tool included
+    registry = create_default_registry(
+        workspace_path=workspace,
+        shell_timeout=shell_timeout,
+        reply_fn=reply_fn,
+        subagent_manager=subagent_mgr,
+    )
+
+    executor = TaskExecutor(
         state, client, ring2_path, reply_fn,
+        registry=registry,
         memory_store=memory_store,
         skill_store=skill_store,
         p1_enabled=config.p1_enabled,
         p1_idle_threshold_sec=config.p1_idle_threshold_sec,
         p1_check_interval_sec=config.p1_check_interval_sec,
+        max_tool_rounds=max_tool_rounds,
     )
+    executor.subagent_manager = subagent_mgr
+    return executor
 
 
 def start_executor_thread(executor: TaskExecutor) -> threading.Thread:

@@ -288,7 +288,8 @@ class TelegramBot:
             "/skill <name> — view skill details\n"
             "/run <name> — start a skill process\n"
             "/stop — stop the running skill\n"
-            "/running — show running skill status\n\n"
+            "/running — show running skill status\n"
+            "/background — show background tasks\n\n"
             "Or send any text to ask Protea a question (P0 task)."
         )
 
@@ -449,6 +450,22 @@ class TelegramBot:
             lines.append("\n(no output)")
         return "\n".join(lines)
 
+    def _cmd_background(self) -> str:
+        """Show background subagent tasks."""
+        mgr = getattr(self.state, "subagent_manager", None)
+        if not mgr:
+            return "Background tasks not available."
+        tasks = mgr.get_active()
+        if not tasks:
+            return "No background tasks."
+        lines = [f"*Background Tasks ({len(tasks)}):*"]
+        for t in tasks:
+            status = "DONE" if t["done"] else "RUNNING"
+            lines.append(
+                f"- {t['task_id']} [{status}] {t['duration']:.0f}s — {t['description'][:60]}"
+            )
+        return "\n".join(lines)
+
     def _enqueue_task(self, text: str, chat_id: str) -> str:
         """Create a Task, enqueue it, pulse p0_event, return ack."""
         task = Task(text=text, chat_id=chat_id)
@@ -518,6 +535,7 @@ class TelegramBot:
         "/skills": "_cmd_skills",
         "/stop": "_cmd_stop_skill",
         "/running": "_cmd_running",
+        "/background": "_cmd_background",
     }
 
     def _handle_command(self, text: str, chat_id: str = "") -> str:

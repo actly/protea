@@ -299,6 +299,8 @@ def run(project_root: pathlib.Path) -> None:
     # Task executor for P0 user tasks.
     reply_fn = bot._send_reply if bot else (lambda text: None)
     executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store)
+    # Expose subagent_manager on state for /background command.
+    state.subagent_manager = getattr(executor, "subagent_manager", None) if executor else None
 
     # Commit watcher — auto-restart on new commits.
     commit_watcher = CommitWatcher(project_root, state.restart_event)

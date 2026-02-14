@@ -26,5 +26,10 @@ enabled = true
 idle_threshold_sec = 120
 check_interval_sec = 60
 
+[ring1.tools]
+workspace_path = "."
+shell_timeout = 30
+max_tool_rounds = 10
+
 [ring1.telegram]
 enabled = true

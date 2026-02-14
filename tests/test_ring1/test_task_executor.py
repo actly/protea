@@ -14,14 +14,13 @@ import pytest
 from ring1.task_executor import (
     TASK_SYSTEM_PROMPT,
     P1_SYSTEM_PROMPT,
-    WEB_TOOLS,
     TaskExecutor,
     _build_task_context,
-    _execute_tool,
     _MAX_REPLY_LEN,
     create_executor,
     start_executor_thread,
 )
+from ring1.tool_registry import Tool, ToolRegistry
 from ring1.telegram_bot import SentinelState, Task
 
 
@@ -37,11 +36,24 @@ def _make_state() -> SentinelState:
     return state
 
 
+def _make_registry() -> ToolRegistry:
+    """Create a simple test registry."""
+    reg = ToolRegistry()
+    reg.register(Tool(
+        name="test_tool",
+        description="Test tool",
+        input_schema={"type": "object", "properties": {}, "required": []},
+        execute=lambda inp: "tool result",
+    ))
+    return reg
+
+
 def _make_executor(
     state: SentinelState | None = None,
     ring2_path: pathlib.Path | None = None,
     reply_fn=None,
     client=None,
+    registry=None,
 ) -> TaskExecutor:
     if state is None:
         state = _make_state()
@@ -52,7 +64,7 @@ def _make_executor(
         reply_fn = MagicMock()
     if ring2_path is None:
         ring2_path = pathlib.Path("/tmp/ring2")
-    return TaskExecutor(state, client, ring2_path, reply_fn)
+    return TaskExecutor(state, client, ring2_path, reply_fn, registry=registry)
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +164,9 @@ class TestTaskExecutor:
         client = MagicMock()
         client.send_message_with_tools.return_value = "Here is my answer"
         reply_fn = MagicMock()
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
         task = Task(text="What is 2+2?", chat_id="123")
 
         executor._execute_task(task)
@@ -162,6 +175,45 @@ class TestTaskExecutor:
         call_args = client.send_message_with_tools.call_args
         assert "What is 2+2?" in call_args[0][1]  # user_message
         reply_fn.assert_called_once_with("Here is my answer")
+
+    def test_execute_task_passes_registry(self, tmp_path):
+        """Registry schemas and executor should be passed to LLM."""
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "answer"
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
+        task = Task(text="test", chat_id="123")
+        executor._execute_task(task)
+
+        call_kwargs = client.send_message_with_tools.call_args
+        tools = call_kwargs[1]["tools"] if "tools" in (call_kwargs[1] or {}) else call_kwargs[0][2]
+        assert any(t["name"] == "test_tool" for t in tools)
+
+    def test_execute_without_registry_uses_send_message(self, tmp_path):
+        """Without registry, should fall back to send_message."""
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        client = MagicMock()
+        client.send_message.return_value = "simple answer"
+        reply_fn = MagicMock()
+
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=None)
+        task = Task(text="test", chat_id="123")
+        executor._execute_task(task)
+
+        client.send_message.assert_called_once()
+        client.send_message_with_tools.assert_not_called()
+        reply_fn.assert_called_once_with("simple answer")
 
     def test_p0_active_signal(self, tmp_path):
         """p0_active should be set during task execution and cleared after."""
@@ -179,8 +231,9 @@ class TestTaskExecutor:
         client = MagicMock()
         client.send_message_with_tools.side_effect = slow_send
         reply_fn = MagicMock()
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
         task = Task(text="test", chat_id="123")
 
         assert not state.p0_active.is_set()
@@ -198,8 +251,9 @@ class TestTaskExecutor:
         client = MagicMock()
         client.send_message_with_tools.side_effect = LLMError("rate limited")
         reply_fn = MagicMock()
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
         task = Task(text="test", chat_id="123")
         executor._execute_task(task)
 
@@ -215,8 +269,9 @@ class TestTaskExecutor:
         client = MagicMock()
         client.send_message_with_tools.return_value = "x" * 5000
         reply_fn = MagicMock()
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
         task = Task(text="test", chat_id="123")
         executor._execute_task(task)
 
@@ -246,8 +301,9 @@ class TestTaskExecutor:
         client = MagicMock()
         client.send_message_with_tools.return_value = "answer"
         reply_fn = MagicMock()
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
         task = Task(text="hello", chat_id="123")
         state.task_queue.put(task)
 
@@ -272,8 +328,9 @@ class TestTaskExecutor:
         client = MagicMock()
         client.send_message_with_tools.return_value = "answer"
         reply_fn = MagicMock()
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
         task = Task(text="test", chat_id="123")
         executor._execute_task(task)
 
@@ -289,13 +346,36 @@ class TestTaskExecutor:
         client = MagicMock()
         client.send_message_with_tools.return_value = "answer"
         reply_fn = MagicMock(side_effect=RuntimeError("send failed"))
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
         task = Task(text="test", chat_id="123")
 
         # Should not raise — the exception is caught
         executor._execute_task(task)
         assert not state.p0_active.is_set()
+
+    def test_max_tool_rounds_passed(self, tmp_path):
+        """max_tool_rounds should be passed to send_message_with_tools."""
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "answer"
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=registry, max_tool_rounds=15,
+        )
+        task = Task(text="test", chat_id="123")
+        executor._execute_task(task)
+
+        call_kwargs = client.send_message_with_tools.call_args[1]
+        assert call_kwargs["max_rounds"] == 15
 
 
 # ---------------------------------------------------------------------------
@@ -324,8 +404,9 @@ class TestTaskExecutorWithMemory:
         client = MagicMock()
         client.send_message_with_tools.side_effect = capture_send
         reply_fn = MagicMock()
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn, memory_store=ms)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry, memory_store=ms)
         task = Task(text="what have you learned?", chat_id="123")
         executor._execute_task(task)
 
@@ -343,8 +424,9 @@ class TestTaskExecutorWithMemory:
         client = MagicMock()
         client.send_message_with_tools.return_value = "answer"
         reply_fn = MagicMock()
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
         task = Task(text="hello", chat_id="123")
         executor._execute_task(task)
 
@@ -365,8 +447,9 @@ class TestTaskHistoryRecording:
         client = MagicMock()
         client.send_message_with_tools.return_value = "answer"
         reply_fn = MagicMock()
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn, memory_store=ms)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry, memory_store=ms)
         task = Task(text="What is 2+2?", chat_id="123")
         executor._execute_task(task)
 
@@ -387,8 +470,9 @@ class TestTaskHistoryRecording:
         client = MagicMock()
         client.send_message_with_tools.return_value = "answer"
         reply_fn = MagicMock()
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
         task = Task(text="test", chat_id="123")
         executor._execute_task(task)  # should not raise
         reply_fn.assert_called_once_with("answer")
@@ -415,8 +499,9 @@ class TestSkillInjection:
         client = MagicMock()
         client.send_message_with_tools.side_effect = capture
         reply_fn = MagicMock()
+        registry = _make_registry()
 
-        executor = TaskExecutor(state, client, ring2, reply_fn, skill_store=ss)
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry, skill_store=ss)
         task = Task(text="test", chat_id="123")
         executor._execute_task(task)
 
@@ -529,8 +614,11 @@ class TestP1IdleDetection:
         ms = MemoryStore(tmp_path / "mem.db")
         ms.add(1, "task", "What is 2+2?")
 
+        registry = _make_registry()
+
         executor = TaskExecutor(
             state, client, ring2, reply_fn,
+            registry=registry,
             memory_store=ms, p1_enabled=True,
             p1_idle_threshold_sec=0,
             p1_check_interval_sec=0,
@@ -592,10 +680,40 @@ class TestCreateExecutor:
         cfg.p1_enabled = True
         cfg.p1_idle_threshold_sec = 600
         cfg.p1_check_interval_sec = 60
+        cfg.workspace_path = "."
+        cfg.shell_timeout = 30
+        cfg.max_tool_rounds = 10
         state = _make_state()
         result = create_executor(cfg, state, pathlib.Path("/tmp"), MagicMock())
         assert isinstance(result, TaskExecutor)
         assert result.p1_enabled is True
+        assert result.registry is not None
+
+    def test_executor_has_registry_tools(self):
+        cfg = MagicMock()
+        cfg.claude_api_key = "sk-test"
+        cfg.claude_model = "test-model"
+        cfg.claude_max_tokens = 4096
+        cfg.p1_enabled = False
+        cfg.p1_idle_threshold_sec = 600
+        cfg.p1_check_interval_sec = 60
+        cfg.workspace_path = "."
+        cfg.shell_timeout = 30
+        cfg.max_tool_rounds = 10
+        state = _make_state()
+        reply_fn = MagicMock()
+        result = create_executor(cfg, state, pathlib.Path("/tmp"), reply_fn)
+        assert result is not None
+        tool_names = result.registry.tool_names()
+        assert "web_search" in tool_names
+        assert "web_fetch" in tool_names
+        assert "read_file" in tool_names
+        assert "write_file" in tool_names
+        assert "edit_file" in tool_names
+        assert "list_dir" in tool_names
+        assert "exec" in tool_names
+        assert "message" in tool_names
+        assert "spawn" in tool_names
 
     def test_skill_store_passed_through(self):
         cfg = MagicMock()
@@ -605,78 +723,45 @@ class TestCreateExecutor:
         cfg.p1_enabled = False
         cfg.p1_idle_threshold_sec = 600
         cfg.p1_check_interval_sec = 60
+        cfg.workspace_path = "."
+        cfg.shell_timeout = 30
+        cfg.max_tool_rounds = 10
         state = _make_state()
         skill_store = MagicMock()
         result = create_executor(cfg, state, pathlib.Path("/tmp"), MagicMock(), skill_store=skill_store)
         assert result.skill_store is skill_store
 
+    def test_subagent_manager_attached(self):
+        cfg = MagicMock()
+        cfg.claude_api_key = "sk-test"
+        cfg.claude_model = "test-model"
+        cfg.claude_max_tokens = 4096
+        cfg.p1_enabled = False
+        cfg.p1_idle_threshold_sec = 600
+        cfg.p1_check_interval_sec = 60
+        cfg.workspace_path = "."
+        cfg.shell_timeout = 30
+        cfg.max_tool_rounds = 10
+        state = _make_state()
+        result = create_executor(cfg, state, pathlib.Path("/tmp"), MagicMock())
+        assert hasattr(result, "subagent_manager")
+        assert result.subagent_manager is not None
+
 
 # ---------------------------------------------------------------------------
-# TestWebToolsIntegration
+# TestSystemPrompt
 # ---------------------------------------------------------------------------
 
-class TestExecuteTool:
-    """Test the _execute_tool dispatcher."""
+class TestSystemPrompt:
+    """Test TASK_SYSTEM_PROMPT content."""
 
-    def test_web_search_dispatch(self, monkeypatch):
-        import ring1.task_executor as mod
-        monkeypatch.setattr(mod, "web_search", lambda query, max_results=5: [
-            {"title": "Result", "url": "https://r.com", "snippet": "A snippet"},
-        ])
-        result = _execute_tool("web_search", {"query": "test"})
-        parsed = json.loads(result)
-        assert len(parsed) == 1
-        assert parsed[0]["title"] == "Result"
-
-    def test_web_search_with_max_results(self, monkeypatch):
-        import ring1.task_executor as mod
-        captured = {}
-        def fake_search(query, max_results=5):
-            captured["max_results"] = max_results
-            return []
-        monkeypatch.setattr(mod, "web_search", fake_search)
-        _execute_tool("web_search", {"query": "test", "max_results": 3})
-        assert captured["max_results"] == 3
-
-    def test_web_fetch_dispatch(self, monkeypatch):
-        import ring1.task_executor as mod
-        monkeypatch.setattr(mod, "web_fetch", lambda url, max_chars=5000: "Page content")
-        result = _execute_tool("web_fetch", {"url": "https://example.com"})
-        assert result == "Page content"
-
-    def test_web_fetch_with_max_chars(self, monkeypatch):
-        import ring1.task_executor as mod
-        captured = {}
-        def fake_fetch(url, max_chars=5000):
-            captured["max_chars"] = max_chars
-            return "text"
-        monkeypatch.setattr(mod, "web_fetch", fake_fetch)
-        _execute_tool("web_fetch", {"url": "https://example.com", "max_chars": 1000})
-        assert captured["max_chars"] == 1000
-
-    def test_unknown_tool(self):
-        result = _execute_tool("unknown_tool", {})
-        assert "Unknown tool" in result
-
-
-class TestWebToolsSchema:
-    """Test WEB_TOOLS schema and TASK_SYSTEM_PROMPT content."""
-
-    def test_web_tools_has_two_tools(self):
-        assert len(WEB_TOOLS) == 2
-
-    def test_web_search_schema(self):
-        search_tool = WEB_TOOLS[0]
-        assert search_tool["name"] == "web_search"
-        assert "query" in search_tool["input_schema"]["properties"]
-        assert "query" in search_tool["input_schema"]["required"]
-
-    def test_web_fetch_schema(self):
-        fetch_tool = WEB_TOOLS[1]
-        assert fetch_tool["name"] == "web_fetch"
-        assert "url" in fetch_tool["input_schema"]["properties"]
-        assert "url" in fetch_tool["input_schema"]["required"]
-
-    def test_system_prompt_mentions_web_tools(self):
+    def test_mentions_all_tools(self):
         assert "web_search" in TASK_SYSTEM_PROMPT
         assert "web_fetch" in TASK_SYSTEM_PROMPT
+        assert "read_file" in TASK_SYSTEM_PROMPT
+        assert "write_file" in TASK_SYSTEM_PROMPT
+        assert "edit_file" in TASK_SYSTEM_PROMPT
+        assert "list_dir" in TASK_SYSTEM_PROMPT
+        assert "exec" in TASK_SYSTEM_PROMPT
+        assert "message" in TASK_SYSTEM_PROMPT
+        assert "spawn" in TASK_SYSTEM_PROMPT

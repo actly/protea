@@ -21,6 +21,9 @@ class Ring1Config(NamedTuple):
     p1_enabled: bool
     p1_idle_threshold_sec: int
     p1_check_interval_sec: int
+    workspace_path: str = "."
+    shell_timeout: int = 30
+    max_tool_rounds: int = 10
 
 
 def _load_dotenv(project_root: pathlib.Path) -> None:
@@ -61,6 +64,7 @@ def load_ring1_config(project_root: pathlib.Path) -> Ring1Config:
     r1 = toml.get("ring1", {})
     tg = r1.get("telegram", {})
     autonomy = r1.get("autonomy", {})
+    tools = r1.get("tools", {})
 
     return Ring1Config(
         claude_api_key=os.environ.get("CLAUDE_API_KEY", ""),
@@ -73,4 +77,7 @@ def load_ring1_config(project_root: pathlib.Path) -> Ring1Config:
         p1_enabled=autonomy.get("enabled", True),
         p1_idle_threshold_sec=autonomy.get("idle_threshold_sec", 600),
         p1_check_interval_sec=autonomy.get("check_interval_sec", 60),
+        workspace_path=tools.get("workspace_path", "."),
+        shell_timeout=tools.get("shell_timeout", 30),
+        max_tool_rounds=tools.get("max_tool_rounds", 10),
     )
