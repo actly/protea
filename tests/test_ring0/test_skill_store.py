@@ -210,6 +210,179 @@ class TestClear:
         assert store.get_by_name("after") is not None
 
 
+class TestCountActive:
+    """count_active() should return only active skills."""
+
+    def test_empty(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        assert store.count_active() == 0
+
+    def test_all_active(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("a", "desc", "tmpl")
+        store.add("b", "desc", "tmpl")
+        assert store.count_active() == 2
+
+    def test_excludes_deactivated(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("a", "desc", "tmpl")
+        store.add("b", "desc", "tmpl")
+        store.deactivate("b")
+        assert store.count_active() == 1
+
+    def test_all_deactivated(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("a", "desc", "tmpl")
+        store.deactivate("a")
+        assert store.count_active() == 0
+
+
+class TestGetLeastUsed:
+    """get_least_used() should return least-used active skills."""
+
+    def test_empty(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        assert store.get_least_used() == []
+
+    def test_ordered_by_usage(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("high", "desc", "tmpl")
+        store.add("low", "desc", "tmpl")
+        store.update_usage("high")
+        store.update_usage("high")
+
+        result = store.get_least_used(limit=2)
+        assert result[0]["name"] == "low"
+        assert result[1]["name"] == "high"
+
+    def test_same_usage_ordered_by_id(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("first", "desc", "tmpl")
+        store.add("second", "desc", "tmpl")
+
+        result = store.get_least_used(limit=2)
+        assert result[0]["name"] == "first"
+        assert result[1]["name"] == "second"
+
+    def test_excludes_deactivated(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("active", "desc", "tmpl")
+        store.add("inactive", "desc", "tmpl")
+        store.deactivate("inactive")
+
+        result = store.get_least_used(limit=5)
+        names = [s["name"] for s in result]
+        assert "inactive" not in names
+        assert "active" in names
+
+    def test_limit(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        for i in range(5):
+            store.add(f"s{i}", "desc", "tmpl")
+        assert len(store.get_least_used(limit=2)) == 2
+
+
+class TestUpdate:
+    """update() should modify specified fields of an existing skill."""
+
+    def test_update_description(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "old desc", "tmpl")
+        assert store.update("s1", description="new desc") is True
+        assert store.get_by_name("s1")["description"] == "new desc"
+
+    def test_update_multiple_fields(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl", tags=["old"])
+        store.update("s1", description="new", prompt_template="new tmpl", tags=["new"])
+        skill = store.get_by_name("s1")
+        assert skill["description"] == "new"
+        assert skill["prompt_template"] == "new tmpl"
+        assert skill["tags"] == ["new"]
+
+    def test_update_source_code(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl")
+        store.update("s1", source_code="print('hello')")
+        assert store.get_by_name("s1")["source_code"] == "print('hello')"
+
+    def test_nonexistent_returns_false(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        assert store.update("nonexistent", description="x") is False
+
+    def test_no_fields_returns_false(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl")
+        assert store.update("s1") is False
+
+    def test_preserves_other_fields(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl", tags=["keep"], source_code="keep code")
+        store.update("s1", description="new desc")
+        skill = store.get_by_name("s1")
+        assert skill["tags"] == ["keep"]
+        assert skill["prompt_template"] == "tmpl"
+        assert skill["source_code"] == "keep code"
+
+
+class TestSourceCode:
+    """source_code field should be stored and retrieved correctly."""
+
+    def test_add_with_source_code(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl", source_code="print('hi')")
+        skill = store.get_by_name("s1")
+        assert skill["source_code"] == "print('hi')"
+
+    def test_default_empty(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl")
+        skill = store.get_by_name("s1")
+        assert skill["source_code"] == ""
+
+    def test_get_by_name_returns_source_code(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        code = "import os\ndef main(): pass"
+        store.add("s1", "desc", "tmpl", source_code=code)
+        assert store.get_by_name("s1")["source_code"] == code
+
+
+class TestSchemaMigration:
+    """Opening an old database should auto-migrate the schema."""
+
+    def test_migrate_adds_source_code_column(self, tmp_path):
+        db_path = tmp_path / "old.db"
+        # Create a database WITHOUT source_code column.
+        con = sqlite3.connect(str(db_path))
+        con.execute(
+            "CREATE TABLE skills ("
+            "  id INTEGER PRIMARY KEY,"
+            "  name TEXT NOT NULL UNIQUE,"
+            "  description TEXT NOT NULL,"
+            "  prompt_template TEXT NOT NULL,"
+            "  parameters TEXT DEFAULT '{}',"
+            "  tags TEXT DEFAULT '[]',"
+            "  source TEXT NOT NULL DEFAULT 'user',"
+            "  usage_count INTEGER DEFAULT 0,"
+            "  active BOOLEAN DEFAULT 1,"
+            "  created_at TEXT DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        con.execute("INSERT INTO skills (name, description, prompt_template) VALUES ('old', 'old desc', 'old tmpl')")
+        con.commit()
+        con.close()
+
+        # Open with SkillStore — should auto-migrate.
+        store = SkillStore(db_path)
+        skill = store.get_by_name("old")
+        assert skill is not None
+        assert skill["source_code"] == ""
+
+        # New inserts should also work.
+        store.add("new", "new desc", "new tmpl", source_code="code")
+        assert store.get_by_name("new")["source_code"] == "code"
+
+
 class TestSharedDatabase:
     """SkillStore should coexist with other tables in same db."""
 

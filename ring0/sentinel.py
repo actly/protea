@@ -162,6 +162,32 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         return False
 
 
+def _try_crystallize(project_root, skill_store, source_code, output, generation, skill_cap=100):
+    """Best-effort crystallization.  Returns action string or None."""
+    try:
+        from ring1.config import load_ring1_config
+        from ring1.crystallizer import Crystallizer
+
+        r1_config = load_ring1_config(project_root)
+        if not r1_config.claude_api_key:
+            log.warning("CLAUDE_API_KEY not set — skipping crystallization")
+            return None
+
+        crystallizer = Crystallizer(r1_config, skill_store)
+        result = crystallizer.crystallize(
+            source_code=source_code,
+            output=output,
+            generation=generation,
+            skill_cap=skill_cap,
+        )
+        log.info("Crystallization result: action=%s skill=%s reason=%s",
+                 result.action, result.skill_name, result.reason)
+        return result.action
+    except Exception as exc:
+        log.error("Crystallization error (non-fatal): %s", exc)
+        return None
+
+
 def _create_memory_store(db_path):
     """Best-effort MemoryStore creation.  Returns None on any error."""
     try:
@@ -268,6 +294,8 @@ def run(project_root: pathlib.Path) -> None:
 
     generation = 0
     last_good_hash: str | None = None
+    last_crystallized_hash: str | None = None
+    skill_cap = r0["evolution"].get("skill_max_count", 100)
     proc: subprocess.Popen | None = None
 
     # Initial snapshot of seed code.
@@ -364,6 +392,17 @@ def run(project_root: pathlib.Path) -> None:
                         f"Code: {len(source)} bytes.\n"
                         f"Output (last 50 lines):\n{output[-1000:] if output else '(no output)'}",
                     )
+
+                # Crystallize skill (best-effort) — skip if source unchanged.
+                if skill_store:
+                    import hashlib
+                    source_hash = hashlib.sha256(source.encode()).hexdigest()
+                    if source_hash != last_crystallized_hash:
+                        _try_crystallize(
+                            project_root, skill_store, source, output,
+                            generation, skill_cap=skill_cap,
+                        )
+                        last_crystallized_hash = source_hash
 
                 # Evolve (best-effort) — skip if busy or cooling down.
                 if not _should_evolve(state, cooldown_sec):

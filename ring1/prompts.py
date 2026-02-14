@@ -1,11 +1,13 @@
-"""Evolution prompt templates for Ring 1.
+"""Evolution and crystallization prompt templates for Ring 1.
 
 Builds system + user prompts for Claude to mutate Ring 2 code.
 Extracts Python code blocks from LLM responses.
+Crystallization: analyse surviving Ring 2 code and extract reusable skills.
 """
 
 from __future__ import annotations
 
+import json
 import re
 
 SYSTEM_PROMPT = """\
@@ -203,3 +205,111 @@ def extract_reflection(response: str) -> str | None:
         if text:
             return text
     return None
+
+
+# ---------------------------------------------------------------------------
+# Skill Crystallization
+# ---------------------------------------------------------------------------
+
+CRYSTALLIZE_SYSTEM_PROMPT = """\
+You are the skill crystallization engine for Protea, a self-evolving artificial life system.
+
+Your task: analyse Ring 2 source code that has successfully survived, and decide \
+whether it represents a reusable *skill* worth preserving.
+
+## What to ignore
+- Heartbeat boilerplate (PROTEA_HEARTBEAT, write_heartbeat, heartbeat loop)
+- Generic setup code (import os, pathlib, signal handling)
+- Trivial programs that only maintain the heartbeat and do nothing else
+
+## What to extract
+Focus on the **core capability** — the interesting algorithm, interaction pattern, \
+data processing, game logic, web server, visualisation, or other useful behaviour \
+beyond the heartbeat.
+
+## Decision
+Compare the code's capability against the list of existing skills provided.
+- **create**: The code demonstrates a genuinely new capability not covered by any \
+existing skill.
+- **update**: The code is an improved or extended version of an existing skill.
+- **skip**: The existing skills already cover this capability, or the code is too \
+trivial to crystallize.
+
+## Response format
+Respond with a single JSON object (no markdown fences, no extra text):
+
+For create:
+{"action": "create", "name": "skill_name_snake_case", "description": "One-sentence description", "prompt_template": "Core pattern description with key code snippets and algorithms", "tags": ["tag1", "tag2"]}
+
+For update:
+{"action": "update", "existing_name": "skill_name", "description": "Updated description", "prompt_template": "Updated core pattern", "tags": ["tag1", "tag2"]}
+
+For skip:
+{"action": "skip", "reason": "Brief explanation of why this was skipped"}
+"""
+
+
+def build_crystallize_prompt(
+    source_code: str,
+    output: str,
+    generation: int,
+    existing_skills: list[dict],
+    skill_cap: int = 100,
+) -> tuple[str, str]:
+    """Build (system_prompt, user_message) for the crystallization LLM call."""
+    parts: list[str] = []
+
+    parts.append(f"## Ring 2 Source (Generation {generation})")
+    parts.append("```python")
+    parts.append(source_code.rstrip())
+    parts.append("```")
+    parts.append("")
+
+    if output:
+        parts.append("## Program Output (last lines)")
+        parts.append(output[-2000:])
+        parts.append("")
+
+    if existing_skills:
+        parts.append("## Existing Skills")
+        for skill in existing_skills:
+            name = skill.get("name", "?")
+            desc = skill.get("description", "")
+            tags = skill.get("tags", [])
+            parts.append(f"- {name}: {desc} (tags: {', '.join(tags) if tags else 'none'})")
+        parts.append("")
+
+    active_count = len(existing_skills)
+    parts.append(f"## Capacity: {active_count}/{skill_cap} skills")
+    if active_count >= skill_cap:
+        parts.append("The skill store is FULL. Only create if this is clearly better than the least-used existing skill.")
+    parts.append("")
+
+    parts.append("Respond with a single JSON object.")
+
+    return CRYSTALLIZE_SYSTEM_PROMPT, "\n".join(parts)
+
+
+_VALID_ACTIONS = {"create", "update", "skip"}
+
+
+def parse_crystallize_response(response: str) -> dict | None:
+    """Parse the JSON response from the crystallization LLM call.
+
+    Handles optional markdown code-block wrappers. Returns None on
+    parse failure or invalid action.
+    """
+    text = response.strip()
+    # Strip markdown code fences if present.
+    m = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+    if m:
+        text = m.group(1).strip()
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("action") not in _VALID_ACTIONS:
+        return None
+    return data

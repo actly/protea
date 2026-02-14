@@ -14,6 +14,7 @@ db_path = "data/protea.db"
 [ring0.evolution]
 seed = 42
 cooldown_sec = 300
+skill_max_count = 100
 
 [ring1]
 claude_model = "claude-sonnet-4-5-20250929"

@@ -1,6 +1,12 @@
 """Tests for ring1.prompts."""
 
-from ring1.prompts import build_evolution_prompt, extract_python_code, extract_reflection
+from ring1.prompts import (
+    build_crystallize_prompt,
+    build_evolution_prompt,
+    extract_python_code,
+    extract_reflection,
+    parse_crystallize_response,
+)
 
 
 class TestBuildEvolutionPrompt:
@@ -450,3 +456,122 @@ class TestExtractReflection:
         response = "Just some text without reflection"
         reflection = extract_reflection(response)
         assert reflection is None
+
+
+class TestBuildCrystallizePrompt:
+    """build_crystallize_prompt() should produce valid (system, user) pair."""
+
+    def test_returns_tuple(self):
+        system, user = build_crystallize_prompt(
+            source_code="print('hello')",
+            output="hello",
+            generation=5,
+            existing_skills=[],
+        )
+        assert isinstance(system, str)
+        assert isinstance(user, str)
+
+    def test_contains_source_code(self):
+        _, user = build_crystallize_prompt(
+            source_code="unique_marker_99",
+            output="",
+            generation=1,
+            existing_skills=[],
+        )
+        assert "unique_marker_99" in user
+
+    def test_contains_output(self):
+        _, user = build_crystallize_prompt(
+            source_code="x=1",
+            output="output_marker_42",
+            generation=1,
+            existing_skills=[],
+        )
+        assert "output_marker_42" in user
+
+    def test_empty_output_no_section(self):
+        _, user = build_crystallize_prompt(
+            source_code="x=1",
+            output="",
+            generation=1,
+            existing_skills=[],
+        )
+        assert "Program Output" not in user
+
+    def test_contains_existing_skills(self):
+        skills = [
+            {"name": "web_dashboard", "description": "Web dashboard", "tags": ["web"]},
+            {"name": "game", "description": "Snake game", "tags": ["game"]},
+        ]
+        _, user = build_crystallize_prompt(
+            source_code="x=1",
+            output="",
+            generation=1,
+            existing_skills=skills,
+        )
+        assert "web_dashboard" in user
+        assert "Snake game" in user
+        assert "Existing Skills" in user
+
+    def test_capacity_display(self):
+        skills = [{"name": f"s{i}", "description": "d", "tags": []} for i in range(5)]
+        _, user = build_crystallize_prompt(
+            source_code="x=1",
+            output="",
+            generation=1,
+            existing_skills=skills,
+            skill_cap=100,
+        )
+        assert "5/100" in user
+
+    def test_full_capacity_warning(self):
+        skills = [{"name": f"s{i}", "description": "d", "tags": []} for i in range(100)]
+        _, user = build_crystallize_prompt(
+            source_code="x=1",
+            output="",
+            generation=1,
+            existing_skills=skills,
+            skill_cap=100,
+        )
+        assert "FULL" in user
+
+
+class TestParseCrystallizeResponse:
+    """parse_crystallize_response() should parse JSON from LLM responses."""
+
+    def test_parse_create(self):
+        resp = '{"action": "create", "name": "web_dashboard", "description": "Web dash", "prompt_template": "tmpl", "tags": ["web"]}'
+        data = parse_crystallize_response(resp)
+        assert data["action"] == "create"
+        assert data["name"] == "web_dashboard"
+
+    def test_parse_update(self):
+        resp = '{"action": "update", "existing_name": "web_dashboard", "description": "Updated", "prompt_template": "tmpl", "tags": []}'
+        data = parse_crystallize_response(resp)
+        assert data["action"] == "update"
+        assert data["existing_name"] == "web_dashboard"
+
+    def test_parse_skip(self):
+        resp = '{"action": "skip", "reason": "already covered"}'
+        data = parse_crystallize_response(resp)
+        assert data["action"] == "skip"
+        assert data["reason"] == "already covered"
+
+    def test_invalid_json(self):
+        assert parse_crystallize_response("not json at all") is None
+
+    def test_invalid_action(self):
+        resp = '{"action": "delete", "name": "x"}'
+        assert parse_crystallize_response(resp) is None
+
+    def test_markdown_wrapped(self):
+        resp = '```json\n{"action": "create", "name": "test", "description": "d", "prompt_template": "t", "tags": []}\n```'
+        data = parse_crystallize_response(resp)
+        assert data is not None
+        assert data["action"] == "create"
+
+    def test_non_dict_returns_none(self):
+        assert parse_crystallize_response("[1, 2, 3]") is None
+
+    def test_missing_action_returns_none(self):
+        assert parse_crystallize_response('{"name": "x"}') is None
