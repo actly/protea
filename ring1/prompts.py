@@ -67,6 +67,7 @@ def build_evolution_prompt(
     memories: list[dict] | None = None,
     task_history: list[dict] | None = None,
     skills: list[dict] | None = None,
+    crash_logs: list[dict] | None = None,
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call."""
     parts: list[str] = []
@@ -135,6 +136,16 @@ def build_evolution_prompt(
             desc = skill.get("description", "")
             parts.append(f"- {name}: {desc}")
         parts.append("Develop complementary capabilities instead of duplicating these.")
+        parts.append("")
+
+    # Recent crash logs — help diagnose failures
+    if crash_logs:
+        parts.append("## Recent Crash Logs")
+        for log_entry in crash_logs[:3]:
+            gen = log_entry.get("generation", "?")
+            content = log_entry.get("content", "")
+            parts.append(f"### Gen {gen} crash:")
+            parts.append(content[:2000])
         parts.append("")
 
     # Instructions based on outcome

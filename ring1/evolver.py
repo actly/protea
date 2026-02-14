@@ -84,6 +84,7 @@ class Evolver:
         memories: list[dict] | None = None,
         task_history: list[dict] | None = None,
         skills: list[dict] | None = None,
+        crash_logs: list[dict] | None = None,
     ) -> EvolutionResult:
         """Run one evolution cycle.
 
@@ -122,6 +123,7 @@ class Evolver:
             memories=memories,
             task_history=task_history,
             skills=skills,
+            crash_logs=crash_logs,
         )
 
         # 4. Call Claude API.

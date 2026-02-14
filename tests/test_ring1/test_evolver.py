@@ -402,3 +402,47 @@ class TestEvolver:
         call_kwargs = mock_prompt.call_args
         assert call_kwargs[1].get("task_history") is None
         assert call_kwargs[1].get("skills") is None
+
+    def test_crash_logs_passed_to_prompt_builder(self, tmp_path):
+        """crash_logs should be forwarded to build_evolution_prompt."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = f"```python\n{VALID_SOURCE}```"
+        config = _make_config()
+        fitness = _make_fitness()
+        crash_logs = [{"generation": 1, "content": "Gen 1 died."}]
+
+        with patch("ring1.evolver.ClaudeClient") as MockClient, \
+             patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
+            MockClient.return_value.send_message.return_value = llm_response
+            mock_prompt.return_value = ("system", "user")
+            evolver = Evolver(config, fitness)
+            evolver.evolve(ring2, generation=2, params={}, survived=False,
+                           crash_logs=crash_logs)
+
+        mock_prompt.assert_called_once()
+        call_kwargs = mock_prompt.call_args
+        assert call_kwargs[1].get("crash_logs") == crash_logs
+
+    def test_crash_logs_default_none(self, tmp_path):
+        """Calling evolve without crash_logs should pass None."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = f"```python\n{VALID_SOURCE}```"
+        config = _make_config()
+        fitness = _make_fitness()
+
+        with patch("ring1.evolver.ClaudeClient") as MockClient, \
+             patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
+            MockClient.return_value.send_message.return_value = llm_response
+            mock_prompt.return_value = ("system", "user")
+            evolver = Evolver(config, fitness)
+            evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        mock_prompt.assert_called_once()
+        call_kwargs = mock_prompt.call_args
+        assert call_kwargs[1].get("crash_logs") is None

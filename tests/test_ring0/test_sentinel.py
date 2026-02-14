@@ -13,7 +13,12 @@ import pytest
 
 from ring0.git_manager import GitManager
 from ring0.heartbeat import HeartbeatMonitor
-from ring0.sentinel import _start_ring2, _stop_ring2
+from ring0.sentinel import (
+    _classify_failure,
+    _read_ring2_output,
+    _start_ring2,
+    _stop_ring2,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +112,138 @@ class TestRollbackIntegration:
         content = (ring2 / "main.py").read_text()
         assert "sys.exit(1)" not in content
         assert "time.sleep" in content
+
+
+class TestOutputCapture:
+    """Verify Ring 2 output is captured to .output.log."""
+
+    def test_start_creates_log_file(self, tmp_path):
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        _write_ring2_script(ring2, _BAD_RING2)
+        hb_path = ring2 / ".heartbeat"
+
+        proc = _start_ring2(ring2, hb_path)
+        proc.wait(timeout=5)
+        _stop_ring2(proc)
+
+        log_file = ring2 / ".output.log"
+        assert log_file.exists()
+
+    def test_output_written_to_log(self, tmp_path):
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        script = 'import sys\nprint("hello_from_ring2")\nsys.exit(0)\n'
+        _write_ring2_script(ring2, script)
+        hb_path = ring2 / ".heartbeat"
+
+        proc = _start_ring2(ring2, hb_path)
+        proc.wait(timeout=5)
+        _stop_ring2(proc)
+
+        log_file = ring2 / ".output.log"
+        content = log_file.read_text()
+        assert "hello_from_ring2" in content
+
+    def test_stderr_captured(self, tmp_path):
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        script = 'import sys\nprint("err_msg", file=sys.stderr)\nsys.exit(1)\n'
+        _write_ring2_script(ring2, script)
+        hb_path = ring2 / ".heartbeat"
+
+        proc = _start_ring2(ring2, hb_path)
+        proc.wait(timeout=5)
+        _stop_ring2(proc)
+
+        log_file = ring2 / ".output.log"
+        content = log_file.read_text()
+        assert "err_msg" in content
+
+
+class TestReadRing2Output:
+    """Verify _read_ring2_output reads the tail of the log."""
+
+    def test_reads_last_n_lines(self, tmp_path):
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        # Create 200 lines of output.
+        lines = [f"line {i}" for i in range(200)]
+        script = "import sys\n" + "\n".join(f'print("line {i}")' for i in range(200)) + "\nsys.exit(0)\n"
+        _write_ring2_script(ring2, script)
+        hb_path = ring2 / ".heartbeat"
+
+        proc = _start_ring2(ring2, hb_path)
+        proc.wait(timeout=10)
+        _stop_ring2(proc)
+
+        output = _read_ring2_output(proc, max_lines=10)
+        result_lines = output.splitlines()
+        assert len(result_lines) == 10
+        assert "line 199" in result_lines[-1]
+
+    def test_no_log_path_returns_empty(self):
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait()
+        output = _read_ring2_output(proc)
+        assert output == ""
+
+    def test_missing_log_file_returns_empty(self, tmp_path):
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait()
+        proc._log_path = tmp_path / "nonexistent.log"
+        output = _read_ring2_output(proc)
+        assert output == ""
+
+
+class TestClassifyFailure:
+    """Verify _classify_failure correctly categorises exit reasons."""
+
+    def test_heartbeat_timeout_process_running(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            result = _classify_failure(proc, "")
+            assert "heartbeat timeout" in result
+            assert "still running" in result
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_exit_code_nonzero(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(42)"])
+        proc.wait()
+        result = _classify_failure(proc, "some output")
+        assert "exit code 42" in result
+
+    def test_traceback_extracted(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(1)"])
+        proc.wait()
+        output = (
+            "Starting up...\n"
+            "Traceback (most recent call last):\n"
+            '  File "main.py", line 10\n'
+            "ZeroDivisionError: division by zero"
+        )
+        result = _classify_failure(proc, output)
+        assert "Traceback" in result
+        assert "ZeroDivisionError" in result
+
+    def test_clean_exit_but_heartbeat_lost(self):
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait()
+        assert proc.returncode == 0
+        result = _classify_failure(proc, "")
+        assert "clean exit" in result
+
+    def test_signal_kill(self):
+        import signal
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        time.sleep(0.1)
+        proc.send_signal(signal.SIGKILL)
+        proc.wait()
+        result = _classify_failure(proc, "")
+        assert "killed by signal" in result
+        assert "SIGKILL" in result
 
 
 class TestConfigLoading:

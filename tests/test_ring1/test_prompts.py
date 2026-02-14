@@ -311,6 +311,67 @@ class TestBuildEvolutionPrompt:
         assert "Evolution Strategy" in system
         assert "user" in system.lower()
 
+    def test_crash_logs_included(self):
+        crash_logs = [
+            {"generation": 2, "content": "Gen 2 died after 5s.\nReason: exit code 1\n\n--- Last output ---\nKeyError: 'foo'"},
+            {"generation": 1, "content": "Gen 1 died after 3s.\nReason: killed by signal SIGKILL"},
+        ]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=3,
+            survived=False,
+            crash_logs=crash_logs,
+        )
+        assert "Recent Crash Logs" in user
+        assert "Gen 2 crash:" in user
+        assert "KeyError" in user
+        assert "Gen 1 crash:" in user
+        assert "SIGKILL" in user
+
+    def test_no_crash_logs_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            crash_logs=None,
+        )
+        assert "Recent Crash Logs" not in user
+
+    def test_empty_crash_logs_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            crash_logs=[],
+        )
+        assert "Recent Crash Logs" not in user
+
+    def test_crash_logs_before_instructions(self):
+        crash_logs = [
+            {"generation": 1, "content": "Gen 1 died."},
+        ]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=2,
+            survived=False,
+            crash_logs=crash_logs,
+        )
+        crash_pos = user.index("Recent Crash Logs")
+        instructions_pos = user.index("## Instructions")
+        assert crash_pos < instructions_pos
+
 
 class TestExtractPythonCode:
     def test_extracts_code_block(self):

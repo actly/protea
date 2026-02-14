@@ -35,27 +35,65 @@ def _load_config(project_root: pathlib.Path) -> dict:
 
 def _start_ring2(ring2_path: pathlib.Path, heartbeat_path: pathlib.Path) -> subprocess.Popen:
     """Launch the Ring 2 process and return its Popen handle."""
+    log_file = ring2_path / ".output.log"
+    fh = open(log_file, "w")
     env = {**os.environ, "PROTEA_HEARTBEAT": str(heartbeat_path)}
     proc = subprocess.Popen(
         [sys.executable, str(ring2_path / "main.py")],
         cwd=str(ring2_path),
         env=env,
+        stdout=fh,
+        stderr=subprocess.STDOUT,
     )
+    proc._log_fh = fh          # keep reference for later close
+    proc._log_path = log_file  # keep path for later read
     log.info("Ring 2 started  pid=%d", proc.pid)
     return proc
 
 
 def _stop_ring2(proc: subprocess.Popen | None) -> None:
     """Terminate the Ring 2 process if it is still running."""
-    if proc is None or proc.poll() is not None:
+    if proc is None:
         return
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-    log.info("Ring 2 stopped  pid=%d", proc.pid)
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        log.info("Ring 2 stopped  pid=%d", proc.pid)
+    fh = getattr(proc, "_log_fh", None)
+    if fh:
+        fh.close()
+
+
+def _read_ring2_output(proc, max_lines: int = 100) -> str:
+    """Read the last *max_lines* from Ring 2's captured output log."""
+    log_path = getattr(proc, "_log_path", None)
+    if not log_path or not log_path.exists():
+        return ""
+    lines = log_path.read_text(errors="replace").splitlines()
+    return "\n".join(lines[-max_lines:])
+
+
+def _classify_failure(proc, output: str) -> str:
+    """Determine why Ring 2 failed based on return code and output."""
+    rc = proc.returncode
+    if rc is None:
+        return "heartbeat timeout (process still running)"
+    if rc < 0:
+        import signal as _signal
+        sig = _signal.Signals(-rc).name if -rc in _signal.Signals._value2member_map_ else str(-rc)
+        return f"killed by signal {sig}"
+    if rc != 0:
+        # Extract the last Traceback from output.
+        lines = output.splitlines()
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].startswith("Traceback"):
+                return "\n".join(lines[i:])
+        return f"exit code {rc}"
+    return "clean exit but heartbeat lost"
 
 
 def _should_evolve(state, cooldown_sec: int) -> bool:
@@ -69,7 +107,7 @@ def _should_evolve(state, cooldown_sec: int) -> bool:
     return True
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None):
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None):
     """Best-effort evolution.  Returns True if new code was written."""
     try:
         from ring1.config import load_ring1_config
@@ -107,6 +145,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             memories=memories,
             task_history=task_history,
             skills=skills,
+            crash_logs=crash_logs,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
@@ -315,12 +354,15 @@ def run(project_root: pathlib.Path) -> None:
                 except subprocess.CalledProcessError:
                     pass
 
-                # Record observation in memory.
+                # Record observation in memory (with output).
+                output = _read_ring2_output(proc, max_lines=50)
+                source = (ring2_path / "main.py").read_text()
                 if memory_store:
                     memory_store.add(
                         generation, "observation",
                         f"Gen {generation} survived {elapsed:.0f}s (max {params.max_runtime_sec}s). "
-                        f"Code: {len((ring2_path / 'main.py').read_text())} bytes.",
+                        f"Code: {len(source)} bytes.\n"
+                        f"Output (last 50 lines):\n{output[-1000:] if output else '(no output)'}",
                     )
 
                 # Evolve (best-effort) — skip if busy or cooling down.
@@ -333,12 +375,19 @@ def run(project_root: pathlib.Path) -> None:
                         state.evolution_directive = ""
                     if directive and memory_store:
                         memory_store.add(generation, "directive", directive)
+                    crash_logs = []
+                    if memory_store:
+                        try:
+                            crash_logs = memory_store.get_by_type("crash_log", limit=3)
+                        except Exception:
+                            pass
                     evolved = _try_evolve(
                         project_root, fitness, ring2_path,
                         generation, params, True, notifier,
                         directive=directive,
                         memory_store=memory_store,
                         skill_store=skill_store,
+                        crash_logs=crash_logs,
                     )
                 if evolved:
                     state.last_evolution_time = time.time()
@@ -368,7 +417,11 @@ def run(project_root: pathlib.Path) -> None:
 
             # Ring 2 is dead — failure path.
             log.warning("Ring 2 lost heartbeat after %.1fs (gen-%d)", elapsed, generation)
+            output = _read_ring2_output(proc)
             _stop_ring2(proc)
+
+            failure_reason = _classify_failure(proc, output)
+            log.warning("Failure reason: %s", failure_reason.splitlines()[0])
 
             score = min(elapsed / params.max_runtime_sec, 0.99) if params.max_runtime_sec > 0 else 0.0
             commit_hash = last_good_hash or "unknown"
@@ -389,11 +442,13 @@ def run(project_root: pathlib.Path) -> None:
                 log.info("Rolling back to %s", last_good_hash[:12])
                 git.rollback(last_good_hash)
 
-            # Record observation in memory.
+            # Record crash log and observation in memory.
             if memory_store:
                 memory_store.add(
-                    generation, "observation",
-                    f"Gen {generation} died after {elapsed:.0f}s / {params.max_runtime_sec}s. Heartbeat lost.",
+                    generation, "crash_log",
+                    f"Gen {generation} died after {elapsed:.0f}s.\n"
+                    f"Reason: {failure_reason}\n\n"
+                    f"--- Last output ---\n{output[-2000:] if output else '(no output)'}",
                 )
 
             # Evolve from the good base (best-effort) — skip if busy or cooling down.
@@ -406,12 +461,19 @@ def run(project_root: pathlib.Path) -> None:
                     state.evolution_directive = ""
                 if directive and memory_store:
                     memory_store.add(generation, "directive", directive)
+                crash_logs = []
+                if memory_store:
+                    try:
+                        crash_logs = memory_store.get_by_type("crash_log", limit=3)
+                    except Exception:
+                        pass
                 evolved = _try_evolve(
                     project_root, fitness, ring2_path,
                     generation, params, False, notifier,
                     directive=directive,
                     memory_store=memory_store,
                     skill_store=skill_store,
+                    crash_logs=crash_logs,
                 )
             if evolved:
                 state.last_evolution_time = time.time()
