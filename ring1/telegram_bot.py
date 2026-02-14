@@ -162,18 +162,39 @@ class TelegramBot:
 
     # -- command handlers --
 
+    def _get_ring2_description(self) -> str:
+        """Extract the first line of Ring 2's module docstring."""
+        try:
+            source = (self.ring2_path / "main.py").read_text()
+            for quote in ('"""', "'''"):
+                idx = source.find(quote)
+                if idx == -1:
+                    continue
+                end = source.find(quote, idx + 3)
+                if end == -1:
+                    continue
+                doc = source[idx + 3:end].strip().splitlines()[0]
+                return doc
+        except Exception:
+            pass
+        return ""
+
     def _cmd_status(self) -> str:
         snap = self.state.snapshot()
         elapsed = time.time() - snap["start_time"]
         status = "PAUSED" if snap["paused"] else ("ALIVE" if snap["alive"] else "DEAD")
-        return (
-            f"*Protea Status*\n"
-            f"Generation: {snap['generation']}\n"
-            f"Status: {status}\n"
-            f"Uptime: {elapsed:.0f}s\n"
-            f"Mutation rate: {snap['mutation_rate']:.2f}\n"
-            f"Max runtime: {snap['max_runtime_sec']:.0f}s"
-        )
+        desc = self._get_ring2_description()
+        lines = [
+            f"*Protea Status*",
+            f"Generation: {snap['generation']}",
+            f"Status: {status}",
+            f"Uptime: {elapsed:.0f}s",
+            f"Mutation rate: {snap['mutation_rate']:.2f}",
+            f"Max runtime: {snap['max_runtime_sec']:.0f}s",
+        ]
+        if desc:
+            lines.append(f"Program: {desc}")
+        return "\n".join(lines)
 
     def _cmd_history(self) -> str:
         rows = self.fitness.get_history(limit=10)

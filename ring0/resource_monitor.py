@@ -35,8 +35,10 @@ def get_memory_percent() -> float:
     total_out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
     total = int(total_out.strip())
     free = info.get("Pages free", 0) * page_size
+    inactive = info.get("Pages inactive", 0) * page_size
     speculative = info.get("Pages speculative", 0) * page_size
-    used = total - free - speculative
+    purgeable = info.get("Pages purgeable", 0) * page_size
+    used = total - free - inactive - speculative - purgeable
     return round(used / total * 100, 2) if total else 0.0
 
 
