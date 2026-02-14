@@ -20,3 +20,5 @@ data/
 
 # Ring 2 is a separate git repo managed by Ring 0
 ring2/.git/
+ring2/.heartbeat
+ring2/ring2_output/
