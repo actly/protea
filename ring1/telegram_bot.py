@@ -204,29 +204,35 @@ class TelegramBot:
     def _cmd_status(self) -> str:
         snap = self.state.snapshot()
         elapsed = time.time() - snap["start_time"]
-        status = "PAUSED" if snap["paused"] else ("ALIVE" if snap["alive"] else "DEAD")
+        status_map = {
+            "PAUSED": "PAUSED (已暂停)",
+            "ALIVE": "ALIVE (运行中)",
+            "DEAD": "DEAD (已停止)",
+        }
+        raw = "PAUSED" if snap["paused"] else ("ALIVE" if snap["alive"] else "DEAD")
+        status = status_map[raw]
         desc = self._get_ring2_description()
         lines = [
-            f"*Protea Status*",
-            f"Generation: {snap['generation']}",
-            f"Status: {status}",
-            f"Uptime: {elapsed:.0f}s",
-            f"Mutation rate: {snap['mutation_rate']:.2f}",
-            f"Max runtime: {snap['max_runtime_sec']:.0f}s",
+            f"*Protea 状态面板*",
+            f"🧬 代 (Generation): {snap['generation']}",
+            f"📡 状态 (Status): {status}",
+            f"⏱ 运行时长 (Uptime): {elapsed:.0f}s",
+            f"🎲 变异率 (Mutation rate): {snap['mutation_rate']:.2f}",
+            f"⏳ 最大运行时间 (Max runtime): {snap['max_runtime_sec']:.0f}s",
         ]
         if desc:
-            lines.append(f"Program: {desc}")
+            lines.append(f"🧠 当前程序 (Program): {desc}")
         return "\n".join(lines)
 
     def _cmd_history(self) -> str:
         rows = self.fitness.get_history(limit=10)
         if not rows:
-            return "No history yet."
-        lines = ["*Recent 10 generations:*"]
+            return "暂无历史记录。"
+        lines = ["*最近 10 代历史 (Recent 10 generations):*"]
         for r in rows:
-            surv = "OK" if r["survived"] else "FAIL"
+            surv = "✅ 存活" if r["survived"] else "❌ 失败"
             lines.append(
-                f"Gen {r['generation']}  score={r['score']:.2f}  "
+                f"第 {r['generation']} 代  适应度={r['score']:.2f}  "
                 f"{surv}  {r['runtime_sec']:.0f}s"
             )
         return "\n".join(lines)
@@ -234,12 +240,12 @@ class TelegramBot:
     def _cmd_top(self) -> str:
         rows = self.fitness.get_best(n=5)
         if not rows:
-            return "No fitness data yet."
-        lines = ["*Top 5 generations:*"]
+            return "暂无适应度数据。"
+        lines = ["*适应度排行 Top 5 (Top 5 generations):*"]
         for r in rows:
-            surv = "OK" if r["survived"] else "FAIL"
+            surv = "✅ 存活" if r["survived"] else "❌ 失败"
             lines.append(
-                f"Gen {r['generation']}  score={r['score']:.2f}  "
+                f"第 {r['generation']} 代  适应度={r['score']:.2f}  "
                 f"{surv}  `{r['commit_hash'][:8]}`"
             )
         return "\n".join(lines)
@@ -249,48 +255,48 @@ class TelegramBot:
         try:
             source = code_path.read_text()
         except FileNotFoundError:
-            return "ring2/main.py not found."
+            return "ring2/main.py 未找到。"
         if len(source) > 3000:
-            source = source[:3000] + "\n... (truncated)"
+            source = source[:3000] + "\n... (已截断)"
         return f"```python\n{source}\n```"
 
     def _cmd_pause(self) -> str:
         if self.state.pause_event.is_set():
-            return "Already paused."
+            return "已经处于暂停状态。"
         self.state.pause_event.set()
-        return "Evolution paused."
+        return "进化已暂停。"
 
     def _cmd_resume(self) -> str:
         if not self.state.pause_event.is_set():
-            return "Not paused."
+            return "当前未暂停。"
         self.state.pause_event.clear()
-        return "Evolution resumed."
+        return "进化已恢复。"
 
     def _cmd_kill(self) -> str:
         self.state.kill_event.set()
-        return "Kill signal sent — Ring 2 will restart."
+        return "终止信号已发送 — Ring 2 将重启。"
 
     def _cmd_help(self) -> str:
         return (
-            "*Protea Bot Commands:*\n"
-            "/status — current generation, uptime, state\n"
-            "/history — recent 10 generations\n"
-            "/top — top 5 by fitness\n"
-            "/code — current Ring 2 source\n"
-            "/pause — pause evolution loop\n"
-            "/resume — resume evolution loop\n"
-            "/kill — restart Ring 2 (no generation advance)\n"
-            "/direct <text> — set evolution directive\n"
-            "/tasks — show task queue and directive\n"
-            "/memory — view recent memories\n"
-            "/forget — clear all memories\n"
-            "/skills — list saved skills\n"
-            "/skill <name> — view skill details\n"
-            "/run <name> — start a skill process\n"
-            "/stop — stop the running skill\n"
-            "/running — show running skill status\n"
-            "/background — show background tasks\n\n"
-            "Or send any text to ask Protea a question (P0 task)."
+            "*Protea 指令列表:*\n"
+            "/status — 查看状态 (代数、运行时间、状态)\n"
+            "/history — 最近 10 代历史\n"
+            "/top — 适应度排行 Top 5\n"
+            "/code — 查看当前 Ring 2 源码\n"
+            "/pause — 暂停进化循环\n"
+            "/resume — 恢复进化循环\n"
+            "/kill — 重启 Ring 2 (不推进代数)\n"
+            "/direct <文本> — 设置进化指令\n"
+            "/tasks — 查看任务队列与指令\n"
+            "/memory — 查看最近记忆\n"
+            "/forget — 清除所有记忆\n"
+            "/skills — 列出已保存的技能\n"
+            "/skill <名称> — 查看技能详情\n"
+            "/run <名称> — 启动一个技能进程\n"
+            "/stop — 停止正在运行的技能\n"
+            "/running — 查看技能运行状态\n"
+            "/background — 查看后台任务\n\n"
+            "直接发送文字即可向 Protea 提问 (P0 任务)。"
         )
 
     def _cmd_direct(self, full_text: str) -> str:
@@ -298,35 +304,36 @@ class TelegramBot:
         # Strip the /direct prefix (and optional @botname)
         parts = full_text.strip().split(None, 1)
         if len(parts) < 2 or not parts[1].strip():
-            return "Usage: /direct <directive text>\nExample: /direct 变成贪吃蛇"
+            return "用法: /direct <指令文本>\n示例: /direct 变成贪吃蛇"
         directive = parts[1].strip()
         with self.state.lock:
             self.state.evolution_directive = directive
         self.state.p0_event.set()  # wake sentinel
-        return f"Evolution directive set: {directive}"
+        return f"进化指令已设置: {directive}"
 
     def _cmd_tasks(self) -> str:
         """Show task queue status and current directive."""
         snap = self.state.snapshot()
-        lines = ["*Task Queue Status:*"]
-        lines.append(f"Queued tasks: {snap['task_queue_size']}")
-        lines.append(f"P0 active: {'Yes' if snap['p0_active'] else 'No'}")
+        lines = ["*任务队列 (Task Queue):*"]
+        lines.append(f"排队中 (Queued): {snap['task_queue_size']}")
+        p0 = "是" if snap["p0_active"] else "否"
+        lines.append(f"P0 执行中 (Active): {p0}")
         directive = snap["evolution_directive"]
-        lines.append(f"Directive: {directive if directive else '(none)'}")
+        lines.append(f"进化指令 (Directive): {directive if directive else '(无)'}")
         return "\n".join(lines)
 
     def _cmd_memory(self) -> str:
         """Show recent memories."""
         ms = self.state.memory_store
         if not ms:
-            return "Memory not available."
+            return "记忆模块不可用。"
         entries = ms.get_recent(5)
         if not entries:
-            return "No memories yet."
-        lines = [f"*Recent Memories ({ms.count()} total):*"]
+            return "暂无记忆。"
+        lines = [f"*最近记忆 (共 {ms.count()} 条):*"]
         for e in entries:
             lines.append(
-                f"[Gen {e['generation']}, {e['entry_type']}] {e['content']}"
+                f"[第 {e['generation']} 代, {e['entry_type']}] {e['content']}"
             )
         return "\n".join(lines)
 
@@ -334,51 +341,51 @@ class TelegramBot:
         """Clear all memories."""
         ms = self.state.memory_store
         if not ms:
-            return "Memory not available."
+            return "记忆模块不可用。"
         ms.clear()
-        return "All memories cleared."
+        return "所有记忆已清除。"
 
     def _cmd_skills(self) -> str:
         """List saved skills."""
         ss = self.state.skill_store
         if not ss:
-            return "Skill store not available."
+            return "技能库不可用。"
         skills = ss.get_active(20)
         if not skills:
-            return "No skills saved yet."
-        lines = [f"*Saved Skills ({ss.count()} total):*"]
+            return "暂无已保存的技能。"
+        lines = [f"*已保存技能 (共 {ss.count()} 个):*"]
         for s in skills:
-            lines.append(f"- *{s['name']}*: {s['description']} (used {s['usage_count']}x)")
+            lines.append(f"- *{s['name']}*: {s['description']} (已使用 {s['usage_count']} 次)")
         return "\n".join(lines)
 
     def _cmd_skill(self, full_text: str) -> str | None:
         """Show skill details: /skill <name>.  No args → inline keyboard."""
         ss = self.state.skill_store
         if not ss:
-            return "Skill store not available."
+            return "技能库不可用。"
         parts = full_text.strip().split(None, 1)
         if len(parts) < 2 or not parts[1].strip():
             skills = ss.get_active(20)
             if not skills:
-                return "No skills saved yet."
+                return "暂无已保存的技能。"
             buttons = [
                 [{"text": s["name"], "callback_data": f"skill:{s['name']}"}]
                 for s in skills
             ]
-            self._send_message_with_keyboard("Select a skill:", buttons)
+            self._send_message_with_keyboard("选择一个技能:", buttons)
             return None
         name = parts[1].strip()
         skill = ss.get_by_name(name)
         if not skill:
-            return f"Skill '{name}' not found."
+            return f"技能 '{name}' 未找到。"
         lines = [
-            f"*Skill: {skill['name']}*",
-            f"Description: {skill['description']}",
-            f"Source: {skill['source']}",
-            f"Used: {skill['usage_count']} times",
-            f"Active: {'Yes' if skill['active'] else 'No'}",
+            f"*技能: {skill['name']}*",
+            f"描述 (Description): {skill['description']}",
+            f"来源 (Source): {skill['source']}",
+            f"已使用 (Used): {skill['usage_count']} 次",
+            f"激活 (Active): {'是' if skill['active'] else '否'}",
             "",
-            "Prompt template:",
+            "提示词模板 (Prompt template):",
             f"```\n{skill['prompt_template']}\n```",
         ]
         return "\n".join(lines)
@@ -387,30 +394,30 @@ class TelegramBot:
         """Start a skill: /run <name>.  No args → inline keyboard."""
         sr = self.state.skill_runner
         if not sr:
-            return "Skill runner not available."
+            return "技能运行器不可用。"
         ss = self.state.skill_store
         if not ss:
-            return "Skill store not available."
+            return "技能库不可用。"
 
         parts = full_text.strip().split(None, 1)
         if len(parts) < 2 or not parts[1].strip():
             skills = ss.get_active(20)
             if not skills:
-                return "No skills saved yet."
+                return "暂无已保存的技能。"
             buttons = [
                 [{"text": s["name"], "callback_data": f"run:{s['name']}"}]
                 for s in skills
             ]
-            self._send_message_with_keyboard("Select a skill to run:", buttons)
+            self._send_message_with_keyboard("选择要运行的技能:", buttons)
             return None
         name = parts[1].strip()
 
         skill = ss.get_by_name(name)
         if not skill:
-            return f"Skill '{name}' not found."
+            return f"技能 '{name}' 未找到。"
         source_code = skill.get("source_code", "")
         if not source_code:
-            return f"Skill '{name}' has no source code."
+            return f"技能 '{name}' 没有源码。"
 
         pid, msg = sr.run(name, source_code)
         ss.update_usage(name)
@@ -420,47 +427,47 @@ class TelegramBot:
         """Stop the running skill."""
         sr = self.state.skill_runner
         if not sr:
-            return "Skill runner not available."
+            return "技能运行器不可用。"
         if sr.stop():
-            return "Skill stopped."
-        return "No skill is running."
+            return "技能已停止。"
+        return "当前没有运行中的技能。"
 
     def _cmd_running(self) -> str:
         """Show running skill status and recent output."""
         sr = self.state.skill_runner
         if not sr:
-            return "Skill runner not available."
+            return "技能运行器不可用。"
         info = sr.get_info()
         if not info:
-            return "No skill has been started."
-        status = "RUNNING" if info["running"] else "STOPPED"
+            return "暂无已启动的技能。"
+        status = "运行中 (RUNNING)" if info["running"] else "已停止 (STOPPED)"
         lines = [
-            f"*Skill: {info['skill_name']}*",
-            f"Status: {status}",
-            f"PID: {info['pid']}",
+            f"*技能: {info['skill_name']}*",
+            f"状态 (Status): {status}",
+            f"进程 (PID): {info['pid']}",
         ]
         if info["running"]:
-            lines.append(f"Uptime: {info['uptime']:.0f}s")
+            lines.append(f"运行时长 (Uptime): {info['uptime']:.0f}s")
         if info["port"]:
-            lines.append(f"Port: {info['port']}")
+            lines.append(f"端口 (Port): {info['port']}")
         output = sr.get_output(max_lines=15)
         if output:
-            lines.append(f"\n*Recent output:*\n```\n{output}\n```")
+            lines.append(f"\n*最近输出:*\n```\n{output}\n```")
         else:
-            lines.append("\n(no output)")
+            lines.append("\n(无输出)")
         return "\n".join(lines)
 
     def _cmd_background(self) -> str:
         """Show background subagent tasks."""
         mgr = getattr(self.state, "subagent_manager", None)
         if not mgr:
-            return "Background tasks not available."
+            return "后台任务不可用。"
         tasks = mgr.get_active()
         if not tasks:
-            return "No background tasks."
-        lines = [f"*Background Tasks ({len(tasks)}):*"]
+            return "暂无后台任务。"
+        lines = [f"*后台任务 (共 {len(tasks)} 个):*"]
         for t in tasks:
-            status = "DONE" if t["done"] else "RUNNING"
+            status = "✅ 完成" if t["done"] else "⏳ 运行中"
             lines.append(
                 f"- {t['task_id']} [{status}] {t['duration']:.0f}s — {t['description'][:60]}"
             )
@@ -471,7 +478,7 @@ class TelegramBot:
         task = Task(text=text, chat_id=chat_id)
         self.state.task_queue.put(task)
         self.state.p0_event.set()  # wake sentinel for P0 scheduling
-        return f"Got it — processing your request ({task.task_id})..."
+        return f"收到 — 正在处理你的请求 ({task.task_id})..."
 
     def _handle_callback(self, data: str) -> str:
         """Handle an inline keyboard callback by prefix.
@@ -483,16 +490,16 @@ class TelegramBot:
             name = data[4:]
             sr = self.state.skill_runner
             if not sr:
-                return "Skill runner not available."
+                return "技能运行器不可用。"
             ss = self.state.skill_store
             if not ss:
-                return "Skill store not available."
+                return "技能库不可用。"
             skill = ss.get_by_name(name)
             if not skill:
-                return f"Skill '{name}' not found."
+                return f"技能 '{name}' 未找到。"
             source_code = skill.get("source_code", "")
             if not source_code:
-                return f"Skill '{name}' has no source code."
+                return f"技能 '{name}' 没有源码。"
             pid, msg = sr.run(name, source_code)
             ss.update_usage(name)
             return msg
@@ -500,22 +507,22 @@ class TelegramBot:
             name = data[6:]
             ss = self.state.skill_store
             if not ss:
-                return "Skill store not available."
+                return "技能库不可用。"
             skill = ss.get_by_name(name)
             if not skill:
-                return f"Skill '{name}' not found."
+                return f"技能 '{name}' 未找到。"
             lines = [
-                f"*Skill: {skill['name']}*",
-                f"Description: {skill['description']}",
-                f"Source: {skill['source']}",
-                f"Used: {skill['usage_count']} times",
-                f"Active: {'Yes' if skill['active'] else 'No'}",
+                f"*技能: {skill['name']}*",
+                f"描述 (Description): {skill['description']}",
+                f"来源 (Source): {skill['source']}",
+                f"已使用 (Used): {skill['usage_count']} 次",
+                f"激活 (Active): {'是' if skill['active'] else '否'}",
                 "",
-                "Prompt template:",
+                "提示词模板 (Prompt template):",
                 f"```\n{skill['prompt_template']}\n```",
             ]
             return "\n".join(lines)
-        return "Unknown action."
+        return "未知操作。"
 
     # -- dispatch --
 

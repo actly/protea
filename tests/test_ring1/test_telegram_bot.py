@@ -231,9 +231,10 @@ class TestTelegramBotCommands:
                 bot.state.mutation_rate = 0.25
                 bot.state.max_runtime_sec = 60
             reply = bot._handle_command("/status")
-            assert "Generation: 7" in reply
-            assert "ALIVE" in reply
-            assert "0.25" in reply
+            assert "*Protea 状态面板*" in reply
+            assert "🧬 代 (Generation): 7" in reply
+            assert "ALIVE (运行中)" in reply
+            assert "🎲 变异率 (Mutation rate): 0.25" in reply
         finally:
             server.shutdown()
 
@@ -243,7 +244,7 @@ class TestTelegramBotCommands:
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.state.pause_event.set()
             reply = bot._handle_command("/status")
-            assert "PAUSED" in reply
+            assert "PAUSED (已暂停)" in reply
         finally:
             server.shutdown()
 
@@ -252,10 +253,10 @@ class TestTelegramBotCommands:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/history")
-            assert "Gen 3" in reply
+            assert "第 3 代" in reply
             assert "0.95" in reply
-            assert "Gen 2" in reply
-            assert "FAIL" in reply
+            assert "第 2 代" in reply
+            assert "❌ 失败" in reply
             bot.fitness.get_history.assert_called_once_with(limit=10)
         finally:
             server.shutdown()
@@ -266,7 +267,7 @@ class TestTelegramBotCommands:
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.fitness.get_history.return_value = []
             reply = bot._handle_command("/history")
-            assert "No history" in reply
+            assert "暂无历史记录。" in reply
         finally:
             server.shutdown()
 
@@ -275,7 +276,7 @@ class TestTelegramBotCommands:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/top")
-            assert "Gen 3" in reply
+            assert "第 3 代" in reply
             assert "0.95" in reply
             bot.fitness.get_best.assert_called_once_with(n=5)
         finally:
@@ -287,7 +288,7 @@ class TestTelegramBotCommands:
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.fitness.get_best.return_value = []
             reply = bot._handle_command("/top")
-            assert "No fitness" in reply
+            assert "暂无适应度数据。" in reply
         finally:
             server.shutdown()
 
@@ -307,7 +308,7 @@ class TestTelegramBotCommands:
             bot = _make_bot(port, tmp_path, monkeypatch)
             (bot.ring2_path / "main.py").unlink()
             reply = bot._handle_command("/code")
-            assert "not found" in reply
+            assert "ring2/main.py 未找到。" in reply
         finally:
             server.shutdown()
 
@@ -317,7 +318,7 @@ class TestTelegramBotCommands:
             bot = _make_bot(port, tmp_path, monkeypatch)
             (bot.ring2_path / "main.py").write_text("x" * 5000)
             reply = bot._handle_command("/code")
-            assert "truncated" in reply
+            assert "(已截断)" in reply
         finally:
             server.shutdown()
 
@@ -326,7 +327,7 @@ class TestTelegramBotCommands:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/pause")
-            assert "paused" in reply.lower()
+            assert "进化已暂停。" in reply
             assert bot.state.pause_event.is_set()
         finally:
             server.shutdown()
@@ -337,7 +338,7 @@ class TestTelegramBotCommands:
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.state.pause_event.set()
             reply = bot._handle_command("/pause")
-            assert "Already" in reply
+            assert "已经处于暂停状态。" in reply
         finally:
             server.shutdown()
 
@@ -347,7 +348,7 @@ class TestTelegramBotCommands:
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.state.pause_event.set()
             reply = bot._handle_command("/resume")
-            assert "resumed" in reply.lower()
+            assert "进化已恢复。" in reply
             assert not bot.state.pause_event.is_set()
         finally:
             server.shutdown()
@@ -357,7 +358,7 @@ class TestTelegramBotCommands:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/resume")
-            assert "Not paused" in reply
+            assert "当前未暂停。" in reply
         finally:
             server.shutdown()
 
@@ -366,7 +367,7 @@ class TestTelegramBotCommands:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/kill")
-            assert "Kill" in reply or "restart" in reply.lower()
+            assert "终止信号已发送" in reply
             assert bot.state.kill_event.is_set()
         finally:
             server.shutdown()
@@ -386,7 +387,7 @@ class TestTelegramBotCommands:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/status@ProteaBot")
-            assert "Generation" in reply
+            assert "🧬 代 (Generation):" in reply
         finally:
             server.shutdown()
 
@@ -540,7 +541,7 @@ class TestBotLifecycle:
             assert len(_BotHandler.sent_messages) >= 1
             reply = _BotHandler.sent_messages[0]
             assert reply["chat_id"] == "12345"
-            assert "Generation" in reply["text"]
+            assert "🧬 代 (Generation):" in reply["text"]
 
             bot.stop()
             thread.join(timeout=5)
@@ -575,7 +576,7 @@ class TestFreeTextEnqueue:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("What is 2+2?", chat_id="12345")
-            assert "processing" in reply.lower() or "got it" in reply.lower()
+            assert "收到 — 正在处理你的请求" in reply
             assert not bot.state.task_queue.empty()
             task = bot.state.task_queue.get_nowait()
             assert task.text == "What is 2+2?"
@@ -611,7 +612,7 @@ class TestDirectCommand:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/direct 变成贪吃蛇", chat_id="12345")
-            assert "directive set" in reply.lower()
+            assert "进化指令已设置:" in reply
             assert "贪吃蛇" in reply
             with bot.state.lock:
                 assert bot.state.evolution_directive == "变成贪吃蛇"
@@ -623,7 +624,7 @@ class TestDirectCommand:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/direct", chat_id="12345")
-            assert "usage" in reply.lower()
+            assert "用法: /direct" in reply
         finally:
             server.shutdown()
 
@@ -645,9 +646,10 @@ class TestTasksCommand:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/tasks")
-            assert "Queued tasks: 0" in reply
-            assert "P0 active: No" in reply
-            assert "(none)" in reply
+            assert "*任务队列 (Task Queue):*" in reply
+            assert "排队中 (Queued): 0" in reply
+            assert "P0 执行中 (Active): 否" in reply
+            assert "进化指令 (Directive): (无)" in reply
         finally:
             server.shutdown()
 
@@ -672,7 +674,7 @@ class TestMemoryCommand:
             bot = _make_bot(port, tmp_path, monkeypatch)
             # memory_store is None by default
             reply = bot._handle_command("/memory")
-            assert "not available" in reply.lower()
+            assert "记忆模块不可用。" in reply
         finally:
             server.shutdown()
 
@@ -683,7 +685,7 @@ class TestMemoryCommand:
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.state.memory_store = MemoryStore(tmp_path / "mem.db")
             reply = bot._handle_command("/memory")
-            assert "No memories" in reply
+            assert "暂无记忆。" in reply
         finally:
             server.shutdown()
 
@@ -697,10 +699,10 @@ class TestMemoryCommand:
             ms.add(2, "reflection", "CA patterns are stable")
             bot.state.memory_store = ms
             reply = bot._handle_command("/memory")
-            assert "Gen 1" in reply
+            assert "[第 1 代," in reply
             assert "observation" in reply
             assert "CA patterns" in reply
-            assert "2 total" in reply
+            assert "最近记忆" in reply
         finally:
             server.shutdown()
 
@@ -713,7 +715,7 @@ class TestForgetCommand:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/forget")
-            assert "not available" in reply.lower()
+            assert "记忆模块不可用。" in reply
         finally:
             server.shutdown()
 
@@ -726,7 +728,7 @@ class TestForgetCommand:
             ms.add(1, "observation", "test")
             bot.state.memory_store = ms
             reply = bot._handle_command("/forget")
-            assert "cleared" in reply.lower()
+            assert "所有记忆已清除。" in reply
             assert ms.count() == 0
         finally:
             server.shutdown()
@@ -740,7 +742,7 @@ class TestSkillsCommand:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/skills")
-            assert "not available" in reply.lower()
+            assert "技能库不可用。" in reply
         finally:
             server.shutdown()
 
@@ -751,7 +753,7 @@ class TestSkillsCommand:
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.state.skill_store = SkillStore(tmp_path / "skills.db")
             reply = bot._handle_command("/skills")
-            assert "No skills" in reply
+            assert "暂无已保存的技能。" in reply
         finally:
             server.shutdown()
 
@@ -768,7 +770,7 @@ class TestSkillsCommand:
             assert "summarize" in reply
             assert "Summarize text" in reply
             assert "translate" in reply
-            assert "2 total" in reply
+            assert "已保存技能" in reply
         finally:
             server.shutdown()
 
@@ -781,7 +783,7 @@ class TestSkillCommand:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/skill summarize")
-            assert "not available" in reply.lower()
+            assert "技能库不可用。" in reply
         finally:
             server.shutdown()
 
@@ -792,7 +794,7 @@ class TestSkillCommand:
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.state.skill_store = SkillStore(tmp_path / "skills.db")
             reply = bot._handle_command("/skill")
-            assert reply == "No skills saved yet."
+            assert reply == "暂无已保存的技能。"
         finally:
             server.shutdown()
 
@@ -816,7 +818,7 @@ class TestSkillCommand:
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.state.skill_store = SkillStore(tmp_path / "skills.db")
             reply = bot._handle_command("/skill nonexistent")
-            assert "not found" in reply.lower()
+            assert "技能 'nonexistent' 未找到。" in reply
         finally:
             server.shutdown()
 
@@ -829,8 +831,8 @@ class TestSkillCommand:
             ss.add("summarize", "Summarize text", "Please summarize: {{text}}")
             bot.state.skill_store = ss
             reply = bot._handle_command("/skill summarize")
-            assert "summarize" in reply
-            assert "Summarize text" in reply
+            assert "技能: summarize" in reply
+            assert "描述 (Description): Summarize text" in reply
             assert "Please summarize: {{text}}" in reply
         finally:
             server.shutdown()
@@ -844,8 +846,11 @@ class TestHelpIncludesMemoryCommands:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/help")
+            assert "*Protea 指令列表:*" in reply
+            assert "/status — 查看状态" in reply
             assert "/memory" in reply
             assert "/forget" in reply
+            assert "直接发送文字即可向 Protea 提问 (P0 任务)。" in reply
         finally:
             server.shutdown()
 
@@ -898,7 +903,7 @@ class TestRunCommandMenu:
             assert result is None  # self-sent
             assert len(_BotHandler.sent_messages) == 1
             msg = _BotHandler.sent_messages[0]
-            assert msg["text"] == "Select a skill to run:"
+            assert msg["text"] == "选择要运行的技能:"
             markup = json.loads(msg["reply_markup"])
             names = [row[0]["text"] for row in markup["inline_keyboard"]]
             assert "dashboard" in names
@@ -918,7 +923,7 @@ class TestRunCommandMenu:
             bot.state.skill_store = SkillStore(tmp_path / "skills.db")
             bot.state.skill_runner = MagicMock()
             result = bot._handle_command("/run")
-            assert result == "No skills saved yet."
+            assert result == "暂无已保存的技能。"
         finally:
             server.shutdown()
 
@@ -956,7 +961,7 @@ class TestSkillCommandMenu:
             assert result is None
             assert len(_BotHandler.sent_messages) == 1
             msg = _BotHandler.sent_messages[0]
-            assert msg["text"] == "Select a skill:"
+            assert msg["text"] == "选择一个技能:"
             markup = json.loads(msg["reply_markup"])
             assert markup["inline_keyboard"][0][0]["text"] == "summarize"
             assert markup["inline_keyboard"][0][0]["callback_data"] == "skill:summarize"
@@ -970,7 +975,7 @@ class TestSkillCommandMenu:
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.state.skill_store = SkillStore(tmp_path / "skills.db")
             result = bot._handle_command("/skill")
-            assert result == "No skills saved yet."
+            assert result == "暂无已保存的技能。"
         finally:
             server.shutdown()
 
@@ -1048,7 +1053,7 @@ class TestCallbackQuery:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_callback("bogus:data")
-            assert "Unknown" in reply
+            assert "未知操作。" in reply
         finally:
             server.shutdown()
 
@@ -1060,7 +1065,7 @@ class TestCallbackQuery:
             bot.state.skill_store = SkillStore(tmp_path / "skills.db")
             bot.state.skill_runner = MagicMock()
             reply = bot._handle_callback("run:nonexistent")
-            assert "not found" in reply.lower()
+            assert "技能 'nonexistent' 未找到。" in reply
         finally:
             server.shutdown()
 
