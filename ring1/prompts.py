@@ -38,14 +38,14 @@ Your code is scored on:
 - Behavioral diversity: Does it do something DIFFERENT from previous generations?
 
 ## Response Format
-First, write a brief reflection (2-3 sentences) about what you've observed
-and your strategy. Then provide the code.
+Start with a SHORT reflection (1-2 sentences max), then the complete code.
+Keep the reflection brief — the code is what matters.
 
 ## Reflection
-[Your observations about patterns, what works/fails, and your strategy]
+[1-2 sentences: what pattern you noticed and your mutation strategy]
 
 ```python
-# your mutated code here
+# your complete mutated code here
 ```
 """
 
