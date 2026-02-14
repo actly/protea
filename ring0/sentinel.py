@@ -207,6 +207,16 @@ def _create_skill_store(db_path):
         return None
 
 
+def _create_skill_runner():
+    """Best-effort SkillRunner creation.  Returns None on any error."""
+    try:
+        from ring1.skill_runner import SkillRunner
+        return SkillRunner()
+    except Exception as exc:
+        log.debug("SkillRunner not available: %s", exc)
+        return None
+
+
 def _create_notifier(project_root):
     """Best-effort Telegram notifier creation.  Returns None on any error."""
     try:
@@ -280,8 +290,10 @@ def run(project_root: pathlib.Path) -> None:
     # Shared state for Telegram bot interaction.
     from ring1.telegram_bot import SentinelState
     state = SentinelState()
+    skill_runner = _create_skill_runner()
     state.memory_store = memory_store
     state.skill_store = skill_store
+    state.skill_runner = skill_runner
     bot = _create_bot(project_root, state, fitness, ring2_path)
 
     # Task executor for P0 user tasks.
@@ -542,6 +554,8 @@ def run(project_root: pathlib.Path) -> None:
         log.info("Sentinel shutting down (KeyboardInterrupt)")
     finally:
         commit_watcher.stop()
+        if skill_runner and skill_runner.is_running():
+            skill_runner.stop()
         if executor:
             executor.stop()
         if bot:

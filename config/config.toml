@@ -13,7 +13,7 @@ db_path = "data/protea.db"
 
 [ring0.evolution]
 seed = 42
-cooldown_sec = 300
+cooldown_sec = 3600
 skill_max_count = 100
 
 [ring1]

@@ -54,6 +54,7 @@ class SentinelState:
         self.p1_active = threading.Event()    # P1 autonomous task executing
         self.last_evolution_time: float = 0.0 # last successful evolution timestamp
         self.skill_store = None               # set by Sentinel after creation
+        self.skill_runner = None              # set by Sentinel after creation
         self.restart_event = threading.Event() # commit watcher triggers restart
 
     def snapshot(self) -> dict:
@@ -263,7 +264,10 @@ class TelegramBot:
             "/memory — view recent memories\n"
             "/forget — clear all memories\n"
             "/skills — list saved skills\n"
-            "/skill <name> — view skill details\n\n"
+            "/skill <name> — view skill details\n"
+            "/run <name> — start a skill process\n"
+            "/stop — stop the running skill\n"
+            "/running — show running skill status\n\n"
             "Or send any text to ask Protea a question (P0 task)."
         )
 
@@ -349,6 +353,65 @@ class TelegramBot:
         ]
         return "\n".join(lines)
 
+    def _cmd_run(self, full_text: str) -> str:
+        """Start a skill: /run <name>."""
+        sr = self.state.skill_runner
+        if not sr:
+            return "Skill runner not available."
+        ss = self.state.skill_store
+        if not ss:
+            return "Skill store not available."
+
+        parts = full_text.strip().split(None, 1)
+        if len(parts) < 2 or not parts[1].strip():
+            return "Usage: /run <skill\\_name>\nExample: /run market\\_analysis\\_dashboard"
+        name = parts[1].strip()
+
+        skill = ss.get_by_name(name)
+        if not skill:
+            return f"Skill '{name}' not found."
+        source_code = skill.get("source_code", "")
+        if not source_code:
+            return f"Skill '{name}' has no source code."
+
+        pid, msg = sr.run(name, source_code)
+        ss.update_usage(name)
+        return msg
+
+    def _cmd_stop_skill(self) -> str:
+        """Stop the running skill."""
+        sr = self.state.skill_runner
+        if not sr:
+            return "Skill runner not available."
+        if sr.stop():
+            return "Skill stopped."
+        return "No skill is running."
+
+    def _cmd_running(self) -> str:
+        """Show running skill status and recent output."""
+        sr = self.state.skill_runner
+        if not sr:
+            return "Skill runner not available."
+        info = sr.get_info()
+        if not info:
+            return "No skill has been started."
+        status = "RUNNING" if info["running"] else "STOPPED"
+        lines = [
+            f"*Skill: {info['skill_name']}*",
+            f"Status: {status}",
+            f"PID: {info['pid']}",
+        ]
+        if info["running"]:
+            lines.append(f"Uptime: {info['uptime']:.0f}s")
+        if info["port"]:
+            lines.append(f"Port: {info['port']}")
+        output = sr.get_output(max_lines=15)
+        if output:
+            lines.append(f"\n*Recent output:*\n```\n{output}\n```")
+        else:
+            lines.append("\n(no output)")
+        return "\n".join(lines)
+
     def _enqueue_task(self, text: str, chat_id: str) -> str:
         """Create a Task, enqueue it, pulse p0_event, return ack."""
         task = Task(text=text, chat_id=chat_id)
@@ -372,6 +435,8 @@ class TelegramBot:
         "/memory": "_cmd_memory",
         "/forget": "_cmd_forget",
         "/skills": "_cmd_skills",
+        "/stop": "_cmd_stop_skill",
+        "/running": "_cmd_running",
     }
 
     def _handle_command(self, text: str, chat_id: str = "") -> str:
@@ -390,6 +455,8 @@ class TelegramBot:
             return self._cmd_direct(stripped)
         if first_word == "/skill":
             return self._cmd_skill(stripped)
+        if first_word == "/run":
+            return self._cmd_run(stripped)
 
         # Standard command dispatch
         method_name = self._COMMANDS.get(first_word)
