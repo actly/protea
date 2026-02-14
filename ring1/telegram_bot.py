@@ -350,10 +350,10 @@ class TelegramBot:
         ss = self.state.skill_store
         if not ss:
             return "技能库不可用。"
-        skills = ss.get_active(20)
+        skills = ss.get_active(500)
         if not skills:
             return "暂无已保存的技能。"
-        lines = [f"*已保存技能 (共 {ss.count()} 个):*"]
+        lines = [f"*已保存技能 (共 {len(skills)} 个):*"]
         for s in skills:
             lines.append(f"- *{s['name']}*: {s['description']} (已使用 {s['usage_count']} 次)")
         return "\n".join(lines)
@@ -365,7 +365,7 @@ class TelegramBot:
             return "技能库不可用。"
         parts = full_text.strip().split(None, 1)
         if len(parts) < 2 or not parts[1].strip():
-            skills = ss.get_active(20)
+            skills = ss.get_active(500)
             if not skills:
                 return "暂无已保存的技能。"
             buttons = [
@@ -401,7 +401,7 @@ class TelegramBot:
 
         parts = full_text.strip().split(None, 1)
         if len(parts) < 2 or not parts[1].strip():
-            skills = ss.get_active(20)
+            skills = ss.get_active(500)
             if not skills:
                 return "暂无已保存的技能。"
             buttons = [
