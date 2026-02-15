@@ -87,8 +87,9 @@ def make_shell_tool(workspace_path: str, timeout: int = 30) -> Tool:
     return Tool(
         name="exec",
         description=(
-            "Execute a shell command and return its output.  The command runs "
-            "in the workspace directory.  Dangerous commands (rm -rf /, dd, "
+            "Execute a shell command and return its output. The command runs "
+            "in the workspace directory. Generated output files should be saved "
+            "to the output/ subdirectory. Dangerous commands (rm -rf /, dd, "
             "mkfs, shutdown, etc.) are blocked."
         ),
         input_schema={

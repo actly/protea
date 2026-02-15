@@ -105,7 +105,9 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
     write_file = Tool(
         name="write_file",
         description=(
-            "Write content to a file (creates parent directories if needed).  "
+            "Write content to a file (creates parent directories if needed). "
+            "Paths are relative to workspace. Generated files (scripts, reports, "
+            "data) should be written to output/ subdirectory, not the root. "
             "Overwrites existing content."
         ),
         input_schema={

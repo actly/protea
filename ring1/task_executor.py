@@ -70,6 +70,13 @@ call view_skill FIRST to read its source code and understand the correct API end
 request methods, and parameters. Do NOT guess endpoint paths — check the code.
 If a skill interaction fails, do NOT repeatedly try shell commands to debug. Instead,
 use view_skill to read the source and understand the correct usage.
+
+FILE OUTPUT RULES:
+- Write all generated files (scripts, PDFs, reports, data) to the output/ directory.
+- Example: write_file with path "output/report.pdf", NOT "report.pdf".
+- Use subdirectories for organization: output/scripts/, output/reports/, output/data/.
+- NEVER write generated files directly to the project root directory.
+- You may read any project file, but generated content must go to output/.
 """
 
 P1_SYSTEM_PROMPT = """\
@@ -504,6 +511,8 @@ def create_executor(
     from ring1.tools import create_default_registry
 
     workspace = getattr(config, "workspace_path", ".") or "."
+    # Ensure output directory exists for LLM-generated files.
+    (pathlib.Path(workspace) / "output").mkdir(parents=True, exist_ok=True)
     shell_timeout = getattr(config, "shell_timeout", 30)
     max_tool_rounds = getattr(config, "max_tool_rounds", 25)
 
