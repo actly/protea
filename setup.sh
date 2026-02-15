@@ -18,21 +18,87 @@ else
     echo "[ok] Cloned into $(pwd)"
 fi
 
-# 1. Check Python >= 3.11
-if ! command -v python3 &>/dev/null; then
-    echo "ERROR: python3 not found. Install Python 3.11+ first."
-    exit 1
+# 1. Find or install Python >= 3.11
+find_python() {
+    # Try common names in order of preference
+    for cmd in python3.13 python3.12 python3.11 python3; do
+        if command -v "$cmd" &>/dev/null; then
+            local ver
+            ver=$("$cmd" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+            local major minor
+            major=$(echo "$ver" | cut -d. -f1)
+            minor=$(echo "$ver" | cut -d. -f2)
+            if [ "$major" -ge 3 ] && [ "$minor" -ge 11 ]; then
+                echo "$cmd"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+install_python() {
+    echo "[..] Attempting to install Python 3.11+..."
+    case "$(uname -s)" in
+        Darwin)
+            if command -v brew &>/dev/null; then
+                echo "[..] Installing via Homebrew..."
+                brew install python@3.11
+            else
+                echo "[..] Homebrew not found, installing Homebrew first..."
+                /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" < /dev/tty
+                eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv 2>/dev/null)"
+                brew install python@3.11
+            fi
+            ;;
+        Linux)
+            if [ -f /etc/debian_version ]; then
+                echo "[..] Installing via apt (deadsnakes PPA)..."
+                sudo apt-get update
+                sudo apt-get install -y software-properties-common
+                sudo add-apt-repository -y ppa:deadsnakes/ppa
+                sudo apt-get update
+                sudo apt-get install -y python3.11 python3.11-venv
+            elif [ -f /etc/redhat-release ]; then
+                echo "[..] Installing via dnf..."
+                sudo dnf install -y python3.11
+            else
+                echo "ERROR: Unsupported Linux distribution. Please install Python 3.11+ manually."
+                exit 1
+            fi
+            ;;
+        *)
+            echo "ERROR: Unsupported OS. Please install Python 3.11+ manually."
+            exit 1
+            ;;
+    esac
+}
+
+PYTHON_CMD=$(find_python || true)
+
+if [ -z "$PYTHON_CMD" ]; then
+    if command -v python3 &>/dev/null; then
+        cur_ver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+        echo "Python $cur_ver found, but 3.11+ is required."
+    else
+        echo "Python not found."
+    fi
+    read -p "Install Python 3.11? [Y/n] " answer < /dev/tty
+    if [ "${answer:-Y}" != "n" ] && [ "${answer:-Y}" != "N" ]; then
+        install_python
+        PYTHON_CMD=$(find_python || true)
+        if [ -z "$PYTHON_CMD" ]; then
+            echo "ERROR: Installation succeeded but Python 3.11+ still not found in PATH."
+            exit 1
+        fi
+    else
+        echo "Aborted."
+        exit 1
+    fi
 fi
 
-py_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-py_major=$(echo "$py_version" | cut -d. -f1)
-py_minor=$(echo "$py_version" | cut -d. -f2)
-
-if [ "$py_major" -lt 3 ] || { [ "$py_major" -eq 3 ] && [ "$py_minor" -lt 11 ]; }; then
-    echo "ERROR: Python 3.11+ required (found $py_version)"
-    exit 1
-fi
-echo "[ok] Python $py_version"
+py_version=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+echo "[ok] Python $py_version ($PYTHON_CMD)"
 
 # 2. Check Git
 if ! command -v git &>/dev/null; then
@@ -44,7 +110,7 @@ echo "[ok] Git $(git --version | awk '{print $3}')"
 # 3. Create venv if needed
 if [ ! -d .venv ]; then
     echo "[..] Creating virtual environment..."
-    python3 -m venv .venv
+    $PYTHON_CMD -m venv .venv
 fi
 
 # Verify venv was created properly
