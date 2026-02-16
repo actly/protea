@@ -42,7 +42,7 @@ enabled = true
 [registry]
 enabled = true
 url = "https://protea-hub-production.up.railway.app"
-node_id = "default"
+node_id = "mac-mini"
 host = "127.0.0.1"
 port = 8761
 db_path = "data/registry.db"

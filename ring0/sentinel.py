@@ -283,7 +283,10 @@ def _create_registry_client(project_root, cfg):
         if not reg_cfg.get("enabled", False):
             return None
         url = reg_cfg.get("url", "http://127.0.0.1:8761")
+        import socket
         node_id = reg_cfg.get("node_id", "default")
+        if node_id == "default":
+            node_id = socket.gethostname()
         client = RegistryClient(url, node_id)
         log.info("RegistryClient created (url=%s, node_id=%s)", url, node_id)
         return client
