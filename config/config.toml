@@ -32,7 +32,7 @@ shell_timeout = 30
 max_tool_rounds = 25
 
 [ring1.portal]
-enabled = true
+enabled = false
 host = "127.0.0.1"
 port = 8888
 
