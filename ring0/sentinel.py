@@ -355,6 +355,7 @@ def run(project_root: pathlib.Path) -> None:
     # Shared state for Telegram bot interaction.
     from ring1.telegram_bot import SentinelState
     state = SentinelState()
+    state.notifier = notifier  # bot uses this for auto-detect propagation
     skill_runner = _create_skill_runner()
     state.memory_store = memory_store
     state.skill_store = skill_store

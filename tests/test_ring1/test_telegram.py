@@ -144,9 +144,34 @@ class TestCreateNotifier:
         cfg.telegram_chat_id = "123"
         assert create_notifier(cfg) is None
 
-    def test_enabled_missing_chat_id(self):
+    def test_enabled_empty_chat_id_returns_notifier(self):
+        """Empty chat_id is OK — send() will no-op until set_chat_id()."""
         cfg = MagicMock()
         cfg.telegram_enabled = True
         cfg.telegram_bot_token = "tok"
         cfg.telegram_chat_id = ""
-        assert create_notifier(cfg) is None
+        notifier = create_notifier(cfg)
+        assert isinstance(notifier, TelegramNotifier)
+        assert notifier.chat_id == ""
+
+    def test_send_without_chat_id_returns_false(self):
+        notifier = TelegramNotifier("tok", "")
+        assert notifier.send("hello") is False
+
+    def test_set_chat_id(self, monkeypatch):
+        server, port = _make_server()
+        try:
+            import ring1.telegram as mod
+            monkeypatch.setattr(
+                mod, "_API_BASE",
+                f"http://127.0.0.1:{port}/bot{{token}}/sendMessage"
+            )
+            notifier = TelegramNotifier("tok", "")
+            assert notifier.send("before") is False
+            notifier.set_chat_id("999")
+            assert notifier.chat_id == "999"
+            assert notifier.send("after") is True
+            msg = _TelegramHandler.received_messages[0]
+            assert msg["chat_id"] == "999"
+        finally:
+            server.shutdown()

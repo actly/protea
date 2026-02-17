@@ -138,17 +138,16 @@ if [ ! -f .env ]; then
     fi
 
     read -p "TELEGRAM_BOT_TOKEN (optional, press Enter to skip): " tg_token < /dev/tty
-    read -p "TELEGRAM_CHAT_ID (optional, press Enter to skip): " tg_chat < /dev/tty
 
     cat > .env <<EOF
 # Claude API Key (used by Ring 1 evolution engine)
 CLAUDE_API_KEY=$api_key
 
-# Telegram Bot Token (used for notifications in Phase 2+)
+# Telegram Bot Token
 TELEGRAM_BOT_TOKEN=$tg_token
 
-# Telegram Chat ID
-TELEGRAM_CHAT_ID=$tg_chat
+# Telegram Chat ID (auto-detected from first message if empty)
+TELEGRAM_CHAT_ID=
 EOF
     echo "[ok] Created .env"
 else

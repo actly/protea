@@ -307,12 +307,56 @@ class TelegramBot:
         })
 
     def _is_authorized(self, update: dict) -> bool:
-        """Check if the update comes from the authorized chat."""
+        """Check if the update comes from the authorized chat.
+
+        When ``chat_id`` is empty (not yet configured), the first incoming
+        message is accepted and its chat ID is locked as the authorized chat.
+        """
         if "callback_query" in update:
             chat = update["callback_query"].get("message", {}).get("chat", {})
         else:
             chat = update.get("message", {}).get("chat", {})
-        return str(chat.get("id", "")) == self.chat_id
+        msg_chat_id = str(chat.get("id", ""))
+        if not msg_chat_id:
+            return False
+        # Auto-detect: lock to the first sender when chat_id is not configured.
+        if not self.chat_id:
+            self._lock_chat_id(msg_chat_id)
+            return True
+        return msg_chat_id == self.chat_id
+
+    def _lock_chat_id(self, chat_id: str) -> None:
+        """Lock to *chat_id*, persist to ``.env``, and update the notifier."""
+        self.chat_id = chat_id
+        log.info("Auto-detected chat_id=%s", chat_id)
+        # Propagate to TelegramNotifier if available on state.
+        notifier = getattr(self.state, "notifier", None)
+        if notifier and hasattr(notifier, "set_chat_id"):
+            notifier.set_chat_id(chat_id)
+        self._persist_chat_id(chat_id)
+
+    def _persist_chat_id(self, chat_id: str) -> None:
+        """Write ``TELEGRAM_CHAT_ID`` into the ``.env`` file."""
+        env_path = self.ring2_path.parent / ".env"
+        try:
+            if env_path.is_file():
+                lines = env_path.read_text().splitlines()
+                new_lines = []
+                found = False
+                for line in lines:
+                    if line.strip().startswith("TELEGRAM_CHAT_ID"):
+                        new_lines.append(f"TELEGRAM_CHAT_ID={chat_id}")
+                        found = True
+                    else:
+                        new_lines.append(line)
+                if not found:
+                    new_lines.append(f"TELEGRAM_CHAT_ID={chat_id}")
+                env_path.write_text("\n".join(new_lines) + "\n")
+            else:
+                env_path.write_text(f"TELEGRAM_CHAT_ID={chat_id}\n")
+            log.info("Persisted chat_id to %s", env_path)
+        except Exception:
+            log.debug("Failed to persist chat_id to .env", exc_info=True)
 
     # -- command handlers --
 
@@ -914,11 +958,15 @@ class TelegramBot:
 # ---------------------------------------------------------------------------
 
 def create_bot(config, state: SentinelState, fitness, ring2_path: pathlib.Path) -> TelegramBot | None:
-    """Create a TelegramBot from Ring1Config, or None if disabled/missing."""
+    """Create a TelegramBot from Ring1Config, or None if disabled/missing.
+
+    ``chat_id`` may be empty — the bot will auto-detect it from the first
+    incoming message.
+    """
     if not config.telegram_enabled:
         return None
-    if not config.telegram_bot_token or not config.telegram_chat_id:
-        log.warning("Telegram bot: enabled but token/chat_id missing — disabled")
+    if not config.telegram_bot_token:
+        log.warning("Telegram bot: enabled but token missing — disabled")
         return None
     return TelegramBot(
         bot_token=config.telegram_bot_token,

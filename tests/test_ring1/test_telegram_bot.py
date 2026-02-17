@@ -486,14 +486,16 @@ class TestCreateBot:
         result = create_bot(cfg, state, MagicMock(), pathlib.Path("/tmp"))
         assert result is None
 
-    def test_missing_chat_id_returns_none(self):
+    def test_missing_chat_id_returns_bot(self):
+        """Empty chat_id is OK — bot will auto-detect from first message."""
         cfg = MagicMock()
         cfg.telegram_enabled = True
         cfg.telegram_bot_token = "tok"
         cfg.telegram_chat_id = ""
         state = SentinelState()
         result = create_bot(cfg, state, MagicMock(), pathlib.Path("/tmp"))
-        assert result is None
+        assert isinstance(result, TelegramBot)
+        assert result.chat_id == ""
 
     def test_valid_config_returns_bot(self):
         cfg = MagicMock()
@@ -1260,5 +1262,158 @@ class TestEnqueuePersistence:
             # task_store is None — should not raise
             reply = bot._handle_command("hello", chat_id="12345")
             assert "收到" in reply
+        finally:
+            server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# TestAutoDetectChatId
+# ---------------------------------------------------------------------------
+
+class TestAutoDetectChatId:
+    """Test chat_id auto-detection from first incoming message."""
+
+    def test_empty_chat_id_accepts_first_message(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            import ring1.telegram_bot as mod
+            monkeypatch.setattr(
+                mod, "_API_BASE",
+                f"http://127.0.0.1:{port}/bot{{token}}/{{method}}",
+            )
+            state = SentinelState()
+            fitness = MagicMock()
+            fitness.get_history.return_value = []
+            fitness.get_best.return_value = []
+            ring2 = tmp_path / "ring2"
+            ring2.mkdir()
+            (ring2 / "main.py").write_text("print('hi')\n")
+            # Create .env so persistence works
+            (tmp_path / ".env").write_text(
+                "CLAUDE_API_KEY=test\nTELEGRAM_BOT_TOKEN=tok\nTELEGRAM_CHAT_ID=\n"
+            )
+            bot = TelegramBot("test-token", "", state, fitness, ring2)
+            assert bot.chat_id == ""
+
+            update = _make_update("/status", chat_id="55555")
+            assert bot._is_authorized(update) is True
+            assert bot.chat_id == "55555"
+        finally:
+            server.shutdown()
+
+    def test_auto_detect_locks_subsequent_messages(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            import ring1.telegram_bot as mod
+            monkeypatch.setattr(
+                mod, "_API_BASE",
+                f"http://127.0.0.1:{port}/bot{{token}}/{{method}}",
+            )
+            state = SentinelState()
+            fitness = MagicMock()
+            ring2 = tmp_path / "ring2"
+            ring2.mkdir()
+            (ring2 / "main.py").write_text("")
+            (tmp_path / ".env").write_text("TELEGRAM_CHAT_ID=\n")
+            bot = TelegramBot("test-token", "", state, fitness, ring2)
+
+            # First message — accepted and locked
+            update1 = _make_update("/status", chat_id="11111")
+            assert bot._is_authorized(update1) is True
+            assert bot.chat_id == "11111"
+
+            # Second message from same chat — authorized
+            update2 = _make_update("/status", chat_id="11111")
+            assert bot._is_authorized(update2) is True
+
+            # Message from different chat — rejected
+            update3 = _make_update("/status", chat_id="99999")
+            assert bot._is_authorized(update3) is False
+        finally:
+            server.shutdown()
+
+    def test_auto_detect_persists_to_env(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            import ring1.telegram_bot as mod
+            monkeypatch.setattr(
+                mod, "_API_BASE",
+                f"http://127.0.0.1:{port}/bot{{token}}/{{method}}",
+            )
+            state = SentinelState()
+            fitness = MagicMock()
+            ring2 = tmp_path / "ring2"
+            ring2.mkdir()
+            (ring2 / "main.py").write_text("")
+            (tmp_path / ".env").write_text(
+                "CLAUDE_API_KEY=test\nTELEGRAM_CHAT_ID=\n"
+            )
+            bot = TelegramBot("test-token", "", state, fitness, ring2)
+            update = _make_update("/status", chat_id="42")
+            bot._is_authorized(update)
+
+            env_content = (tmp_path / ".env").read_text()
+            assert "TELEGRAM_CHAT_ID=42" in env_content
+            # Other keys preserved
+            assert "CLAUDE_API_KEY=test" in env_content
+        finally:
+            server.shutdown()
+
+    def test_auto_detect_updates_notifier(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            import ring1.telegram_bot as mod
+            monkeypatch.setattr(
+                mod, "_API_BASE",
+                f"http://127.0.0.1:{port}/bot{{token}}/{{method}}",
+            )
+            from ring1.telegram import TelegramNotifier
+            notifier = TelegramNotifier("tok", "")
+            state = SentinelState()
+            state.notifier = notifier
+            fitness = MagicMock()
+            ring2 = tmp_path / "ring2"
+            ring2.mkdir()
+            (ring2 / "main.py").write_text("")
+            (tmp_path / ".env").write_text("TELEGRAM_CHAT_ID=\n")
+            bot = TelegramBot("test-token", "", state, fitness, ring2)
+            update = _make_update("/status", chat_id="77777")
+            bot._is_authorized(update)
+
+            assert notifier.chat_id == "77777"
+        finally:
+            server.shutdown()
+
+    def test_end_to_end_auto_detect(self, tmp_path, monkeypatch):
+        """Full loop: bot with empty chat_id auto-detects and replies."""
+        server, port = _make_server()
+        try:
+            import ring1.telegram_bot as mod
+            monkeypatch.setattr(
+                mod, "_API_BASE",
+                f"http://127.0.0.1:{port}/bot{{token}}/{{method}}",
+            )
+            state = SentinelState()
+            fitness = MagicMock()
+            fitness.get_history.return_value = []
+            fitness.get_best.return_value = []
+            ring2 = tmp_path / "ring2"
+            ring2.mkdir()
+            (ring2 / "main.py").write_text("print('hi')\n")
+            (tmp_path / ".env").write_text("TELEGRAM_CHAT_ID=\n")
+            bot = TelegramBot("test-token", "", state, fitness, ring2)
+
+            _BotHandler.updates_queue = [_make_update("/status", chat_id="88888")]
+            thread = start_bot_thread(bot)
+            deadline = time.time() + 5
+            while time.time() < deadline and not _BotHandler.sent_messages:
+                time.sleep(0.1)
+
+            assert bot.chat_id == "88888"
+            assert len(_BotHandler.sent_messages) >= 1
+            assert _BotHandler.sent_messages[0]["chat_id"] == "88888"
+
+            bot.stop()
+            thread.join(timeout=5)
         finally:
             server.shutdown()

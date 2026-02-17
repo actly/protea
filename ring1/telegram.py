@@ -23,8 +23,14 @@ class TelegramNotifier:
         self.chat_id = chat_id
         self._url = _API_BASE.format(token=bot_token)
 
+    def set_chat_id(self, chat_id: str) -> None:
+        """Update the chat ID (e.g. after auto-detection by the bot)."""
+        self.chat_id = chat_id
+
     def send(self, message: str) -> bool:
         """Send a text message.  Returns True on success, False on any error."""
+        if not self.chat_id:
+            return False
         payload = {
             "chat_id": self.chat_id,
             "text": message,
@@ -72,10 +78,14 @@ class TelegramNotifier:
 
 
 def create_notifier(config) -> TelegramNotifier | None:
-    """Create a TelegramNotifier from Ring1Config, or None if disabled."""
+    """Create a TelegramNotifier from Ring1Config, or None if disabled.
+
+    ``chat_id`` may be empty — ``send()`` will silently no-op until the bot
+    auto-detects a chat and calls ``set_chat_id()``.
+    """
     if not config.telegram_enabled:
         return None
-    if not config.telegram_bot_token or not config.telegram_chat_id:
-        log.warning("Telegram enabled but token/chat_id missing — disabled")
+    if not config.telegram_bot_token:
+        log.warning("Telegram enabled but token missing — disabled")
         return None
     return TelegramNotifier(config.telegram_bot_token, config.telegram_chat_id)
