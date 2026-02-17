@@ -58,7 +58,7 @@ class TestBuildEvolutionPrompt:
             survived=True,
         )
         assert "SURVIVED" in user
-        assert "creative" in user.lower() or "interesting" in user.lower()
+        assert "new" in user.lower() or "different" in user.lower()
 
     def test_died_instructions(self):
         _, user = build_evolution_prompt(
@@ -101,7 +101,7 @@ class TestBuildEvolutionPrompt:
             generation=4,
             survived=True,
         )
-        assert "abc123de" in user
+        assert "Gen 3" in user
         assert "0.95" in user
 
     def test_includes_params(self):
@@ -169,8 +169,8 @@ class TestBuildEvolutionPrompt:
         )
         assert "Learned Patterns" in user
         assert "CA patterns survive best" in user
-        assert "Gen 5, reflection" in user
-        assert "Gen 3, observation" in user
+        assert "[Gen 5]" in user
+        assert "[Gen 3]" in user
 
     def test_no_memories_no_section(self):
         _, user = build_evolution_prompt(
@@ -264,8 +264,8 @@ class TestBuildEvolutionPrompt:
 
     def test_skills_included(self):
         skills = [
-            {"name": "summarize", "description": "Summarize text"},
-            {"name": "translate", "description": "Translate text"},
+            {"name": "summarize", "description": "Summarize text", "usage_count": 0},
+            {"name": "translate", "description": "Translate text", "usage_count": 3},
         ]
         _, user = build_evolution_prompt(
             current_source="x=1",
@@ -277,9 +277,12 @@ class TestBuildEvolutionPrompt:
             skills=skills,
         )
         assert "Existing Skills" in user
-        assert "summarize: Summarize text" in user
-        assert "translate: Translate text" in user
-        assert "complementary" in user.lower() or "duplicat" in user.lower()
+        # Used skills shown with usage count.
+        assert "translate" in user
+        assert "used 3x" in user
+        # Unused skills listed in "Never used" section.
+        assert "summarize" in user
+        assert "Never used" in user
 
     def test_no_skills_no_section(self):
         _, user = build_evolution_prompt(
@@ -331,10 +334,10 @@ class TestBuildEvolutionPrompt:
             survived=False,
             crash_logs=crash_logs,
         )
-        assert "Recent Crash Logs" in user
-        assert "Gen 2 crash:" in user
+        assert "Recent Crashes" in user
+        assert "Gen 2" in user
         assert "KeyError" in user
-        assert "Gen 1 crash:" in user
+        assert "Gen 1" in user
         assert "SIGKILL" in user
 
     def test_no_crash_logs_no_section(self):
@@ -347,7 +350,7 @@ class TestBuildEvolutionPrompt:
             survived=True,
             crash_logs=None,
         )
-        assert "Recent Crash Logs" not in user
+        assert "Recent Crashes" not in user
 
     def test_empty_crash_logs_no_section(self):
         _, user = build_evolution_prompt(
@@ -359,7 +362,7 @@ class TestBuildEvolutionPrompt:
             survived=True,
             crash_logs=[],
         )
-        assert "Recent Crash Logs" not in user
+        assert "Recent Crashes" not in user
 
     def test_crash_logs_before_instructions(self):
         crash_logs = [
@@ -374,9 +377,35 @@ class TestBuildEvolutionPrompt:
             survived=False,
             crash_logs=crash_logs,
         )
-        crash_pos = user.index("Recent Crash Logs")
+        crash_pos = user.index("Recent Crashes")
         instructions_pos = user.index("## Instructions")
         assert crash_pos < instructions_pos
+
+    def test_persistent_errors_included(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=5,
+            survived=True,
+            persistent_errors=["attributeerror: 'list' has no attribute 'get'"],
+        )
+        assert "PERSISTENT BUGS" in user
+        assert "list" in user
+
+    def test_plateau_warning(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=5,
+            survived=True,
+            is_plateaued=True,
+        )
+        assert "PLATEAUED" in user
+        assert "fundamentally different" in user.lower()
 
 
 class TestExtractPythonCode:

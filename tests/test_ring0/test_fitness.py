@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import json
 
-from ring0.fitness import FitnessTracker, evaluate_output
+from ring0.fitness import (
+    FitnessTracker,
+    _output_fingerprint,
+    compute_novelty,
+    evaluate_output,
+)
 
 
 class TestRecord:
@@ -117,18 +122,20 @@ class TestGetHistory:
 class TestEvaluateOutput:
     """evaluate_output() multi-factor scoring."""
 
-    def test_empty_output_survivor_gets_base(self):
+    def test_empty_output_survivor_gets_base_plus_novelty(self):
+        # Empty output: base=0.50 + novelty=0.10 (no history = full novelty)
         score, detail = evaluate_output([], survived=True, elapsed=60, max_runtime=60)
-        assert score == 0.50
+        assert score == 0.60
         assert detail["basis"] == "survived"
         assert detail["volume"] == 0.0
+        assert detail["novelty"] == 0.10
 
     def test_rich_diverse_output_scores_high(self):
         lines = [f"result_{i}: {i * 3.14:.4f}" for i in range(60)]
         score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
         assert score > 0.80
-        assert detail["volume"] == 0.15  # saturated at 50+
-        assert detail["diversity"] > 0.10
+        assert detail["volume"] == 0.10  # saturated at 50+ (max 0.10)
+        assert detail["diversity"] > 0.05
 
     def test_duplicate_output_low_diversity(self):
         lines = ["same line"] * 50
@@ -205,3 +212,194 @@ class TestDetailColumn:
         db = tmp_path / "fitness.db"
         FitnessTracker(db)
         FitnessTracker(db)  # second init — ALTER TABLE should be no-op
+
+
+class TestNovelty:
+    """Novelty scoring via Jaccard distance."""
+
+    def test_no_history_returns_full_novelty(self):
+        tokens = {"hello", "world", "test"}
+        assert compute_novelty(tokens, []) == 1.0
+
+    def test_identical_output_zero_novelty(self):
+        tokens = {"hello", "world"}
+        assert compute_novelty(tokens, [tokens]) == 0.0
+
+    def test_completely_different_output_full_novelty(self):
+        current = {"aaa", "bbb", "ccc"}
+        previous = [{"xxx", "yyy", "zzz"}]
+        assert compute_novelty(current, previous) == 1.0
+
+    def test_partial_overlap(self):
+        current = {"hello", "world", "new"}
+        previous = [{"hello", "world", "old"}]
+        novelty = compute_novelty(current, previous)
+        # 2 shared out of 4 union → jaccard=0.5, distance=0.5
+        assert 0.4 < novelty < 0.6
+
+    def test_multiple_previous_outputs(self):
+        current = {"aaa", "bbb"}
+        prev1 = {"aaa", "bbb"}      # identical → distance 0
+        prev2 = {"xxx", "yyy"}      # disjoint → distance 1.0
+        novelty = compute_novelty(current, [prev1, prev2])
+        assert 0.4 < novelty < 0.6  # average of 0.0 and 1.0
+
+    def test_empty_current_returns_full_novelty(self):
+        assert compute_novelty(set(), [{"aaa"}]) == 1.0
+
+    def test_fingerprint_extracts_tokens(self):
+        lines = ["result_42: 3.14", "status: running", "x"]
+        fp = _output_fingerprint(lines)
+        assert "result_42" in fp
+        assert "status" in fp
+        assert "running" in fp
+        # Short tokens and pure numbers excluded.
+        assert "x" not in fp
+        assert "314" not in fp
+
+
+class TestFunctionalScoring:
+    """Functional bonus for I/O-related output."""
+
+    def test_http_url_triggers_functional(self):
+        lines = ["Fetched https://api.example.com/data"]
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        assert detail["functional"] > 0.0
+
+    def test_server_listening_triggers_functional(self):
+        lines = ["Server started on port 8080"] * 5
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        assert detail["functional"] > 0.0
+
+    def test_pure_computation_no_functional(self):
+        lines = [f"pi digit {i}: {i}" for i in range(50)]
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        assert detail["functional"] == 0.0
+
+
+class TestNoveltyInScoring:
+    """Novelty component in evaluate_output with fingerprints."""
+
+    def test_novel_output_gets_bonus(self):
+        lines = [f"unique_concept_{i}" for i in range(50)]
+        score, detail = evaluate_output(
+            lines, survived=True, elapsed=60, max_runtime=60,
+            recent_fingerprints=[],
+        )
+        assert detail["novelty"] == 0.10  # full novelty (no history)
+
+    def test_repeated_output_loses_novelty(self):
+        lines = [f"result_{i}: value" for i in range(50)]
+        fp = _output_fingerprint(lines)
+        score, detail = evaluate_output(
+            lines, survived=True, elapsed=60, max_runtime=60,
+            recent_fingerprints=[fp],
+        )
+        assert detail["novelty"] == 0.0  # identical to history
+
+    def test_fingerprint_stored_in_detail(self):
+        lines = ["hello world test"]
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        assert "fingerprint" in detail
+        assert isinstance(detail["fingerprint"], list)
+
+    def test_error_signatures_stored_in_detail(self):
+        lines = [
+            "normal output",
+            "AttributeError: 'list' has no attribute 'get'",
+        ]
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        assert "error_signatures" in detail
+        assert len(detail["error_signatures"]) > 0
+
+
+class TestRecentFingerprints:
+    """FitnessTracker.get_recent_fingerprints retrieves stored data."""
+
+    def test_returns_fingerprints_from_detail(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        detail = {"fingerprint": ["hello", "world"], "basis": "survived"}
+        tracker.record(1, "abc", 0.8, 60.0, True, detail=detail)
+
+        fps = tracker.get_recent_fingerprints(limit=5)
+        assert len(fps) == 1
+        assert fps[0] == {"hello", "world"}
+
+    def test_skips_entries_without_fingerprint(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        tracker.record(1, "abc", 0.8, 60.0, True, detail={"basis": "survived"})
+        tracker.record(2, "def", 0.8, 60.0, True, detail={"fingerprint": ["foo"]})
+
+        fps = tracker.get_recent_fingerprints(limit=5)
+        assert len(fps) == 1
+        assert fps[0] == {"foo"}
+
+    def test_ignores_failed_entries(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        detail = {"fingerprint": ["fail_token"]}
+        tracker.record(1, "abc", 0.2, 10.0, False, detail=detail)
+
+        fps = tracker.get_recent_fingerprints(limit=5)
+        assert len(fps) == 0
+
+
+class TestPersistentErrors:
+    """FitnessTracker.get_recent_error_signatures tracks recurring bugs."""
+
+    def test_returns_errors_in_multiple_generations(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        sig = "attributeerror: 'list' has no attribute 'get'"
+        for i in range(3):
+            detail = {"error_signatures": [sig]}
+            tracker.record(i, f"h{i}", 0.8, 60.0, True, detail=detail)
+
+        errors = tracker.get_recent_error_signatures(limit=5)
+        assert len(errors) == 1
+        assert sig in errors[0]
+
+    def test_ignores_one_off_errors(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        # Each generation has a different error — not persistent.
+        for i in range(3):
+            detail = {"error_signatures": [f"error_{i}"]}
+            tracker.record(i, f"h{i}", 0.8, 60.0, True, detail=detail)
+
+        errors = tracker.get_recent_error_signatures(limit=5)
+        assert len(errors) == 0
+
+    def test_empty_db_returns_empty(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        assert tracker.get_recent_error_signatures() == []
+
+
+class TestPlateau:
+    """FitnessTracker.is_plateaued detects stagnant scores."""
+
+    def test_plateaued_when_scores_close(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        for i in range(5):
+            tracker.record(i, f"h{i}", 0.80 + i * 0.005, 60.0, True)
+        # Range: 0.80 to 0.82 = 0.02, within epsilon=0.03
+        assert tracker.is_plateaued(window=5, epsilon=0.03) is True
+
+    def test_not_plateaued_when_scores_vary(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        scores = [0.60, 0.70, 0.80, 0.75, 0.85]
+        for i, s in enumerate(scores):
+            tracker.record(i, f"h{i}", s, 60.0, True)
+        # Range: 0.60 to 0.85 = 0.25, exceeds epsilon=0.03
+        assert tracker.is_plateaued(window=5, epsilon=0.03) is False
+
+    def test_not_enough_data(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        tracker.record(1, "h1", 0.80, 60.0, True)
+        assert tracker.is_plateaued(window=5) is False
+
+    def test_only_counts_survived(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        # 3 survived (not enough for window=5) + 2 failed (ignored).
+        for i in range(3):
+            tracker.record(i, f"s{i}", 0.80, 60.0, True)
+        for i in range(2):
+            tracker.record(i + 3, f"f{i}", 0.10, 10.0, False)
+        assert tracker.is_plateaued(window=5) is False

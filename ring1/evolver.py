@@ -81,12 +81,14 @@ class Evolver:
         task_history: list[dict] | None = None,
         skills: list[dict] | None = None,
         crash_logs: list[dict] | None = None,
+        persistent_errors: list[str] | None = None,
+        is_plateaued: bool = False,
     ) -> EvolutionResult:
         """Run one evolution cycle.
 
         1. Read current ring2/main.py
         2. Query fitness history
-        3. Build prompt (with memories)
+        3. Build prompt (with memories, persistent errors, plateau status)
         4. Call Claude API
         5. Extract reflection + store in memory
         6. Extract + validate code
@@ -102,10 +104,10 @@ class Evolver:
         except FileNotFoundError:
             return EvolutionResult(False, "ring2/main.py not found", "")
 
-        # 2. Query fitness history.
-        history_limit = self.config.max_prompt_history
+        # 2. Query fitness history (compact: 5 entries to save tokens).
+        history_limit = min(self.config.max_prompt_history, 5)
         fitness_history = self.fitness.get_history(limit=history_limit)
-        best_performers = self.fitness.get_best(n=5)
+        best_performers = self.fitness.get_best(n=3)
 
         # 3. Build prompt.
         system_prompt, user_message = build_evolution_prompt(
@@ -120,6 +122,8 @@ class Evolver:
             task_history=task_history,
             skills=skills,
             crash_logs=crash_logs,
+            persistent_errors=persistent_errors,
+            is_plateaued=is_plateaued,
         )
 
         # 4. Call Claude API.

@@ -189,8 +189,8 @@ class TestEvolver:
         evolver = Evolver(config, fitness)
         evolver.evolve(ring2, generation=3, params={}, survived=True)
 
-        fitness.get_history.assert_called_once_with(limit=7)
-        fitness.get_best.assert_called_once_with(n=5)
+        fitness.get_history.assert_called_once_with(limit=5)  # capped at 5 to save tokens
+        fitness.get_best.assert_called_once_with(n=3)
 
     def test_evolution_result_namedtuple(self):
         r = EvolutionResult(success=True, reason="OK", new_source="code")

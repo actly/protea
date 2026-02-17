@@ -42,11 +42,16 @@ Avoid duplicating existing skills — develop complementary capabilities.
 ## Fitness (scored 0.0–1.0)
 Survival is necessary but NOT sufficient — a program that only heartbeats scores 0.50.
 - Base survival: 0.50 (survived max_runtime)
-- Output volume: up to +0.15 (meaningful non-empty lines, saturates at 50 lines)
-- Output diversity: up to +0.15 (unique lines / total lines)
+- Output volume: up to +0.10 (meaningful non-empty lines, saturates at 50 lines)
+- Output diversity: up to +0.10 (unique lines / total lines)
+- Output novelty: up to +0.10 (how different from recent generations — CRITICAL)
 - Structured output: up to +0.10 (JSON blocks, tables, key:value reports)
+- Functional bonus: up to +0.05 (real I/O, HTTP, file operations, API interaction)
 - Error penalty: up to −0.10 (traceback/error/exception lines reduce score)
-Produce diverse, structured, error-free output to maximise your score.
+
+IMPORTANT: Novelty is scored by comparing output tokens against recent generations.
+Repeating the same program pattern will score LOW on novelty. Each generation should
+produce genuinely different output to maximise its score.
 
 ## Response Format
 Start with a SHORT reflection (1-2 sentences max), then the complete code.
@@ -73,6 +78,8 @@ def build_evolution_prompt(
     task_history: list[dict] | None = None,
     skills: list[dict] | None = None,
     crash_logs: list[dict] | None = None,
+    persistent_errors: list[str] | None = None,
+    is_plateaued: bool = False,
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call."""
     parts: list[str] = []
@@ -90,92 +97,124 @@ def build_evolution_prompt(
     parts.append("```")
     parts.append("")
 
-    # Fitness history
+    # Fitness history (compact — limit to 5 to save tokens)
     if fitness_history:
         parts.append("## Recent Fitness History")
-        for entry in fitness_history[:10]:
+        for entry in fitness_history[:5]:
             status = "SURVIVED" if entry.get("survived") else "DIED"
+            detail_str = ""
+            detail_raw = entry.get("detail")
+            if detail_raw:
+                try:
+                    d = json.loads(detail_raw) if isinstance(detail_raw, str) else detail_raw
+                    novelty = d.get("novelty", "?")
+                    detail_str = f" novelty={novelty}"
+                except (json.JSONDecodeError, TypeError):
+                    pass
             parts.append(
                 f"- Gen {entry.get('generation', '?')}: "
-                f"score={entry.get('score', 0):.2f}, "
-                f"runtime={entry.get('runtime_sec', 0):.1f}s, "
+                f"score={entry.get('score', 0):.2f},{detail_str} "
                 f"{status}"
             )
         parts.append("")
 
-    # Best performers
+    # Best performers (compact — limit to 3)
     if best_performers:
         parts.append("## Best Performers (by score)")
-        for entry in best_performers[:5]:
+        for entry in best_performers[:3]:
             parts.append(
                 f"- Gen {entry.get('generation', '?')}: "
-                f"score={entry.get('score', 0):.2f}, "
-                f"hash={entry.get('commit_hash', '?')[:8]}"
+                f"score={entry.get('score', 0):.2f}"
             )
         parts.append("")
 
-    # Learned patterns from memory
+    # Persistent errors — MUST FIX (high priority)
+    if persistent_errors:
+        parts.append("## PERSISTENT BUGS (must fix!)")
+        parts.append("These errors have appeared across multiple generations "
+                      "and MUST be fixed in this evolution:")
+        for err in persistent_errors[:3]:
+            parts.append(f"- {err}")
+        parts.append("")
+
+    # Learned patterns from memory (compact — limit to 3)
     if memories:
-        parts.append("## Learned Patterns (from memory)")
-        for mem in memories:
+        parts.append("## Learned Patterns")
+        for mem in memories[:3]:
             gen = mem.get("generation", "?")
-            mtype = mem.get("entry_type", "?")
             content = mem.get("content", "")
-            parts.append(f"- [Gen {gen}, {mtype}] {content}")
+            # Truncate long memories to save tokens.
+            if len(content) > 200:
+                content = content[:200] + "..."
+            parts.append(f"- [Gen {gen}] {content}")
         parts.append("")
 
     # Recent user tasks — guide evolution direction
     if task_history:
-        parts.append("## Recent User Tasks")
-        for task in task_history[:10]:
+        parts.append("## Recent User Tasks (guide your evolution!)")
+        for task in task_history[:5]:
             content = task.get("content", "")
+            if len(content) > 150:
+                content = content[:150] + "..."
             parts.append(f"- {content}")
-        parts.append("Consider evolving capabilities useful for these tasks.")
+        parts.append("Evolve capabilities directly useful for these tasks.")
         parts.append("")
 
-    # Existing skills — avoid duplication
+    # Existing skills — avoid duplication + highlight unused ones
     if skills:
-        parts.append("## Existing Skills (avoid duplication)")
-        for skill in skills[:20]:
+        parts.append("## Existing Skills")
+        used_skills = []
+        unused_skills = []
+        for skill in skills[:15]:
             name = skill.get("name", "?")
             desc = skill.get("description", "")
-            parts.append(f"- {name}: {desc}")
-        parts.append("Develop complementary capabilities instead of duplicating these.")
+            usage = skill.get("usage_count", 0)
+            if usage > 0:
+                used_skills.append(f"- {name}: {desc} (used {usage}x)")
+            else:
+                unused_skills.append(name)
+
+        if used_skills:
+            parts.append("### Popular (avoid duplicating):")
+            parts.extend(used_skills)
+        if unused_skills:
+            parts.append(f"### Never used: {', '.join(unused_skills)}")
+            parts.append("Consider exploring DIFFERENT directions from these unused skills.")
         parts.append("")
 
-    # Recent crash logs — help diagnose failures
+    # Recent crash logs (compact)
     if crash_logs:
-        parts.append("## Recent Crash Logs")
-        for log_entry in crash_logs[:3]:
+        parts.append("## Recent Crashes")
+        for log_entry in crash_logs[:2]:
             gen = log_entry.get("generation", "?")
             content = log_entry.get("content", "")
-            parts.append(f"### Gen {gen} crash:")
-            parts.append(content[:2000])
+            parts.append(f"- Gen {gen}: {content[:500]}")
         parts.append("")
 
-    # Instructions based on outcome
-    if survived:
-        parts.append("## Instructions")
+    # Instructions based on outcome + plateau detection
+    parts.append("## Instructions")
+    if is_plateaued:
         parts.append(
-            "The previous code survived! Evolve it further — make it do something "
-            "more interesting or complex while keeping the heartbeat alive. "
-            "Be creative and try something NEW."
+            "WARNING: Scores have PLATEAUED. The current approach is stagnant. "
+            "You MUST try something fundamentally different — a new algorithm, "
+            "a new domain, a new interaction pattern. Do NOT make incremental "
+            "changes to the existing code. Start fresh with a novel idea."
+        )
+    elif survived:
+        parts.append(
+            "The previous code survived. Evolve it — try something genuinely "
+            "NEW and different while keeping the heartbeat alive."
         )
     else:
-        parts.append("## Instructions")
         parts.append(
             "The previous code DIED (heartbeat lost). Fix the issue and make it "
-            "more robust. Ensure the heartbeat loop runs reliably. "
-            "Then add interesting behavior on top."
+            "more robust. Ensure the heartbeat loop runs reliably."
         )
 
     if directive:
         parts.append("")
-        parts.append("## User Directive")
-        parts.append(
-            f"The user has requested a specific direction for evolution: {directive}\n"
-            "Prioritize this directive while still following all constraints above."
-        )
+        parts.append(f"## User Directive\n{directive}")
+        parts.append("Prioritize this directive above all other guidance.")
 
     return SYSTEM_PROMPT, "\n".join(parts)
 

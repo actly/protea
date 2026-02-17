@@ -96,18 +96,42 @@ def _classify_failure(proc, output: str) -> str:
     return "clean exit but heartbeat lost"
 
 
-def _should_evolve(state, cooldown_sec: int) -> bool:
-    """Check whether evolution should proceed based on priority and cooldown."""
+def _should_evolve(state, cooldown_sec: int, fitness=None, plateau_window: int = 5, plateau_epsilon: float = 0.03, has_directive: bool = False) -> tuple[bool, bool]:
+    """Check whether evolution should proceed.
+
+    Returns (should_evolve, is_plateaued):
+    - should_evolve: True if evolution should run.
+    - is_plateaued: True if scores are stagnant (signals to LLM to try
+      something fundamentally different).
+
+    Adaptive evolution: when scores are plateaued AND no user directive
+    is pending, skip the LLM call to save tokens.  A directive always
+    forces evolution.
+    """
     if state.p0_active.is_set():
-        return False
+        return False, False
     if state.p1_active.is_set():
-        return False
+        return False, False
     if time.time() - state.last_evolution_time < cooldown_sec:
-        return False
-    return True
+        return False, False
+
+    # Detect plateau.
+    plateaued = False
+    if fitness:
+        try:
+            plateaued = fitness.is_plateaued(window=plateau_window, epsilon=plateau_epsilon)
+        except Exception:
+            pass
+
+    # Adaptive: skip evolution when plateaued unless a directive is pending.
+    if plateaued and not has_directive:
+        log.info("Scores plateaued — skipping evolution to save tokens (set a directive to force)")
+        return False, True
+
+    return True, plateaued
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None):
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False):
     """Best-effort evolution.  Returns True if new code was written."""
     try:
         from ring1.config import load_ring1_config
@@ -118,22 +142,30 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             log.warning("CLAUDE_API_KEY not set — skipping evolution")
             return False
 
-        memories = memory_store.get_recent(5) if memory_store else []
+        # Compact context to save tokens: fewer memories.
+        memories = memory_store.get_recent(3) if memory_store else []
 
         # Gather task history and skills for directed evolution.
         task_history = []
         if memory_store:
             try:
-                task_history = memory_store.get_by_type("task", limit=10)
+                task_history = memory_store.get_by_type("task", limit=5)
             except Exception:
                 pass
 
         skills = []
         if skill_store:
             try:
-                skills = skill_store.get_active(20)
+                skills = skill_store.get_active(15)
             except Exception:
                 pass
+
+        # Get persistent error signatures from recent fitness history.
+        persistent_errors = []
+        try:
+            persistent_errors = fitness.get_recent_error_signatures(limit=5)
+        except Exception:
+            pass
 
         evolver = Evolver(r1_config, fitness, memory_store=memory_store)
         result = evolver.evolve(
@@ -146,6 +178,8 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             task_history=task_history,
             skills=skills,
             crash_logs=crash_logs,
+            persistent_errors=persistent_errors,
+            is_plateaued=is_plateaued,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
@@ -341,7 +375,9 @@ def run(project_root: pathlib.Path) -> None:
     interval = r0["heartbeat_interval_sec"]
     timeout = r0["heartbeat_timeout_sec"]
     seed = r0["evolution"]["seed"]
-    cooldown_sec = r0["evolution"].get("cooldown_sec", 1800)
+    cooldown_sec = r0["evolution"].get("cooldown_sec", 900)
+    plateau_window = r0["evolution"].get("plateau_window", 5)
+    plateau_epsilon = r0["evolution"].get("plateau_epsilon", 0.03)
 
     git = GitManager(ring2_path)
     git.init_repo()
@@ -456,12 +492,18 @@ def run(project_root: pathlib.Path) -> None:
                 )
                 _stop_ring2(proc)
 
-                # Read output and score.
+                # Read output and score (with novelty from recent fingerprints).
                 output = _read_ring2_output(proc, max_lines=200)
                 output_lines = output.splitlines() if output else []
+                recent_fps = []
+                try:
+                    recent_fps = fitness.get_recent_fingerprints(limit=10)
+                except Exception:
+                    pass
                 score, detail = evaluate_output(
                     output_lines, survived=True,
                     elapsed=elapsed, max_runtime=params.max_runtime_sec,
+                    recent_fingerprints=recent_fps,
                 )
 
                 # Record success.
@@ -509,9 +551,18 @@ def run(project_root: pathlib.Path) -> None:
                     else:
                         log.debug("Skipping crystallization — source unchanged (hash=%s…)", source_hash[:12])
 
-                # Evolve (best-effort) — skip if busy or cooling down.
-                if not _should_evolve(state, cooldown_sec):
-                    log.info("Skipping evolution (busy or cooldown)")
+                # Evolve (best-effort) — skip if busy, cooling down, or plateaued.
+                with state.lock:
+                    pending_directive = state.evolution_directive
+                should_evo, plateaued = _should_evolve(
+                    state, cooldown_sec, fitness=fitness,
+                    plateau_window=plateau_window,
+                    plateau_epsilon=plateau_epsilon,
+                    has_directive=bool(pending_directive),
+                )
+                if not should_evo:
+                    if not plateaued:
+                        log.info("Skipping evolution (busy or cooldown)")
                     evolved = False
                 else:
                     with state.lock:
@@ -532,6 +583,7 @@ def run(project_root: pathlib.Path) -> None:
                         memory_store=memory_store,
                         skill_store=skill_store,
                         crash_logs=crash_logs,
+                        is_plateaued=plateaued,
                     )
                 if evolved:
                     state.last_evolution_time = time.time()
@@ -602,7 +654,16 @@ def run(project_root: pathlib.Path) -> None:
                 )
 
             # Evolve from the good base (best-effort) — skip if busy or cooling down.
-            if not _should_evolve(state, cooldown_sec):
+            # Failures always trigger evolution (no plateau skip) to fix the issue.
+            with state.lock:
+                pending_directive = state.evolution_directive
+            should_evo, plateaued = _should_evolve(
+                state, cooldown_sec, fitness=fitness,
+                plateau_window=plateau_window,
+                plateau_epsilon=plateau_epsilon,
+                has_directive=True,  # failures always force evolution
+            )
+            if not should_evo:
                 log.info("Skipping evolution (busy or cooldown)")
                 evolved = False
             else:
@@ -624,6 +685,7 @@ def run(project_root: pathlib.Path) -> None:
                     memory_store=memory_store,
                     skill_store=skill_store,
                     crash_logs=crash_logs,
+                    is_plateaued=False,  # failure path — focus on fixing, not novelty
                 )
             if evolved:
                 state.last_evolution_time = time.time()
