@@ -185,7 +185,7 @@ def build_evolution_prompt(
 
     # Inherited gene patterns from best past generations.
     if gene_pool:
-        parts.append("## Inherited Patterns (from best past generations)")
+        parts.append("## Inherited Patterns (matched to current context)")
         parts.append("Reuse or build upon these proven code patterns:")
         for gene in gene_pool[:3]:
             gen = gene.get("generation", "?")

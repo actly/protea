@@ -392,3 +392,177 @@ class TestBackfillFromGit:
 
         added = gp.backfill_from_git(ring2, ft)
         assert added == 0
+
+
+class TestExtractTags:
+    def test_splits_pascal_case(self):
+        tags = GenePool.extract_tags("StreamAnalyzer")
+        assert "stream" in tags
+        assert "analyzer" in tags
+
+    def test_splits_snake_case(self):
+        tags = GenePool.extract_tags("compute_fibonacci")
+        assert "compute" in tags
+        assert "fibonacci" in tags
+
+    def test_extracts_docstring_words(self):
+        tags = GenePool.extract_tags('"""Real-time anomaly detection"""')
+        assert "real" in tags
+        assert "time" in tags
+        assert "anomaly" in tags
+        assert "detection" in tags
+
+    def test_filters_stopwords(self):
+        tags = GenePool.extract_tags("the and for with class def")
+        assert "the" not in tags
+        assert "and" not in tags
+        assert "for" not in tags
+
+    def test_filters_short_tokens(self):
+        tags = GenePool.extract_tags("a in x do it")
+        assert tags == []
+
+    def test_deduplicates(self):
+        tags = GenePool.extract_tags("stream Stream STREAM stream_analyzer StreamAnalyzer")
+        assert tags.count("stream") == 1
+
+    def test_empty_input(self):
+        tags = GenePool.extract_tags("")
+        assert tags == []
+
+    def test_mixed_summary(self):
+        summary = (
+            'class StreamAnalyzer:\n'
+            '    """Real-time anomaly detection in data streams."""\n'
+            '    def analyze(self, value): ...\n'
+            'def compute_fibonacci(n):\n'
+            '    """Calculate fibonacci sequence."""'
+        )
+        tags = GenePool.extract_tags(summary)
+        assert "stream" in tags
+        assert "analyzer" in tags
+        assert "anomaly" in tags
+        assert "detection" in tags
+        assert "fibonacci" in tags
+        assert "compute" in tags
+
+    def test_returns_sorted(self):
+        tags = GenePool.extract_tags("Zebra Apple Mango")
+        assert tags == sorted(tags)
+
+
+class TestGetRelevant:
+    def test_returns_matching_genes(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+
+        # Add genes with different themes.
+        source_stream = SAMPLE_SOURCE + "\n# stream_version\n"
+        gp.add(1, 0.80, source_stream)  # has "stream", "analyzer", "anomaly" tags
+
+        # Add a different gene (fibonacci-focused, no stream).
+        fib_source = '''\
+import os, pathlib, time, threading
+
+def compute_prime_sieve(n):
+    """Compute primes using sieve of Eratosthenes."""
+    pass
+
+def main():
+    hb = pathlib.Path(os.environ.get("PROTEA_HEARTBEAT", ".heartbeat"))
+    pid = os.getpid()
+    while True:
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()
+'''
+        gp.add(2, 0.90, fib_source)
+
+        # Query with context matching "stream" and "anomaly".
+        relevant = gp.get_relevant("stream anomaly detection monitoring", 1)
+        assert len(relevant) == 1
+        assert relevant[0]["generation"] == 1  # stream gene, not the higher-score prime gene
+
+    def test_fallback_to_score_when_no_overlap(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+
+        gp.add(1, 0.60, SAMPLE_SOURCE + "\n# v1\n")
+        gp.add(2, 0.90, SAMPLE_SOURCE + "\n# v2\n")
+
+        # Context with completely unrelated terms.
+        relevant = gp.get_relevant("xyzzy quantum entanglement", 2)
+        assert len(relevant) == 2
+        # Should fall back to score ordering.
+        assert relevant[0]["score"] == 0.90
+
+    def test_fallback_when_empty_context(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.85, SAMPLE_SOURCE + "\n# x\n")
+
+        relevant = gp.get_relevant("", 3)
+        assert len(relevant) == 1
+
+    def test_empty_pool(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+
+        relevant = gp.get_relevant("stream analyzer", 3)
+        assert relevant == []
+
+    def test_returns_tags_field(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.85, SAMPLE_SOURCE + "\n# t\n")
+
+        relevant = gp.get_relevant("stream analyzer", 1)
+        assert len(relevant) == 1
+        assert "tags" in relevant[0]
+        assert "stream" in relevant[0]["tags"]
+
+
+class TestTagBackfill:
+    def test_backfills_tags_on_init(self, tmp_path):
+        db = tmp_path / "test.db"
+
+        # Create pool and insert a gene WITHOUT tags (simulate pre-migration).
+        import sqlite3
+        con = sqlite3.connect(str(db))
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS gene_pool ("
+            "    id INTEGER PRIMARY KEY,"
+            "    generation INTEGER NOT NULL,"
+            "    score REAL NOT NULL,"
+            "    source_hash TEXT NOT NULL UNIQUE,"
+            "    gene_summary TEXT NOT NULL,"
+            "    created_at TEXT DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        con.execute(
+            "INSERT INTO gene_pool (generation, score, source_hash, gene_summary) "
+            "VALUES (?, ?, ?, ?)",
+            (1, 0.85, "abc123", 'class StreamAnalyzer:\n    """Real-time anomaly detection"""'),
+        )
+        con.commit()
+        con.close()
+
+        # Re-open with GenePool — should migrate + backfill tags.
+        gp = GenePool(db, max_size=10)
+        top = gp.get_top(1)
+        assert len(top) == 1
+        assert top[0]["tags"] is not None
+        assert "stream" in top[0]["tags"]
+        assert "analyzer" in top[0]["tags"]
+
+    def test_add_stores_tags(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.85, SAMPLE_SOURCE + "\n# tag_test\n")
+
+        top = gp.get_top(1)
+        assert top[0]["tags"] is not None
+        assert len(top[0]["tags"]) > 0
+        # Should contain tags from the summary (StreamAnalyzer, etc.)
+        assert "stream" in top[0]["tags"]

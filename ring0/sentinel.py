@@ -169,11 +169,26 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         except Exception:
             pass
 
-        # Get top genes for inheritance.
+        # Get context-relevant genes for inheritance.
         genes = []
         if gene_pool:
             try:
-                genes = gene_pool.get_top(3)
+                from ring0.gene_pool import GenePool as _GP
+                context_parts = []
+                # Current Ring 2 source — extract class/function names.
+                try:
+                    current_source = (ring2_path / "main.py").read_text()
+                    context_parts.append(_GP.extract_summary(current_source))
+                except OSError:
+                    pass
+                if directive:
+                    context_parts.append(directive)
+                for task in task_history:
+                    context_parts.append(task.get("content", ""))
+                for err in persistent_errors:
+                    context_parts.append(err)
+                context = " ".join(context_parts)
+                genes = gene_pool.get_relevant(context, 3)
             except Exception:
                 pass
 
