@@ -39,11 +39,14 @@ The code can:
 Refer to user task history (if provided) to guide evolution direction.
 Avoid duplicating existing skills — develop complementary capabilities.
 
-## Fitness
-Your code is scored on:
-- Survival: Did it run for the full max_runtime without crashing? (primary)
-- User relevance: Does it develop capabilities useful to the user?
-- Behavioral diversity: Does it do something DIFFERENT from previous generations?
+## Fitness (scored 0.0–1.0)
+Survival is necessary but NOT sufficient — a program that only heartbeats scores 0.50.
+- Base survival: 0.50 (survived max_runtime)
+- Output volume: up to +0.15 (meaningful non-empty lines, saturates at 50 lines)
+- Output diversity: up to +0.15 (unique lines / total lines)
+- Structured output: up to +0.10 (JSON blocks, tables, key:value reports)
+- Error penalty: up to −0.10 (traceback/error/exception lines reduce score)
+Produce diverse, structured, error-free output to maximise your score.
 
 ## Response Format
 Start with a SHORT reflection (1-2 sentences max), then the complete code.
