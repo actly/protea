@@ -181,7 +181,7 @@ echo "=== Running Tests ==="
 $PY -m pytest tests/ -v
 
 # 9. Ensure scripts are executable
-chmod +x run_with_nohup.sh 2>/dev/null || true
+chmod +x run_with_nohup.sh stop_run.sh 2>/dev/null || true
 
 # 10. Done
 
