@@ -458,6 +458,15 @@ def run(project_root: pathlib.Path) -> None:
         except Exception as exc:
             log.debug("Gene pool backfill failed (non-fatal): %s", exc)
 
+    # Backfill gene pool from git history.
+    if gene_pool and fitness and gene_pool.count() < gene_pool.max_size:
+        try:
+            backfilled = gene_pool.backfill_from_git(ring2_path, fitness)
+            if backfilled:
+                log.info("Gene pool backfilled %d genes from git history", backfilled)
+        except Exception as exc:
+            log.debug("Gene pool git backfill failed (non-fatal): %s", exc)
+
     # Task executor for P0 user tasks.
     reply_fn = bot._send_reply if bot else (lambda text: None)
     executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client)

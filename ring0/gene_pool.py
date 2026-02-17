@@ -14,6 +14,7 @@ import logging
 import pathlib
 import re
 import sqlite3
+import subprocess
 
 log = logging.getLogger("protea.gene_pool")
 
@@ -142,6 +143,68 @@ class GenePool:
 
         if added:
             log.info("Gene pool: backfilled %d genes from skill store", added)
+        return added
+
+    def backfill_from_git(self, ring2_path: pathlib.Path, fitness_tracker) -> int:
+        """Backfill genes from git history using fitness_log records.
+
+        Queries fitness_log for survived generations with high scores,
+        recovers the Ring 2 source from git commits, and adds them to
+        the pool.  Dedup via source_hash handles repeats.
+        Returns the number of genes added.
+        """
+        slots = self.max_size - self.count()
+        if slots <= 0:
+            return 0
+
+        git_dir = ring2_path / ".git"
+        if not git_dir.is_dir():
+            log.debug("backfill_from_git: no .git in %s", ring2_path)
+            return 0
+
+        # Query fitness_log for survived entries with commit hashes.
+        min_score = 0.75
+        with fitness_tracker._connect() as con:
+            rows = con.execute(
+                "SELECT generation, score, commit_hash FROM fitness_log "
+                "WHERE survived = 1 AND commit_hash IS NOT NULL AND score > ? "
+                "ORDER BY score DESC LIMIT ?",
+                (min_score, slots),
+            ).fetchall()
+
+        if not rows:
+            log.debug("backfill_from_git: no qualifying fitness_log entries")
+            return 0
+
+        added = 0
+        for row in rows:
+            generation = row["generation"]
+            score = row["score"]
+            commit_hash = row["commit_hash"]
+
+            try:
+                result = subprocess.run(
+                    ["git", "show", f"{commit_hash}:main.py"],
+                    cwd=str(ring2_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode != 0:
+                    continue
+                source = result.stdout
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+
+            if not source or len(source) < 50:
+                continue
+
+            if self.add(generation, score, source):
+                added += 1
+                log.debug("backfill_from_git: added gen-%d (score=%.2f)", generation, score)
+
+        if added:
+            log.info("Gene pool: backfilled %d genes from git history", added)
         return added
 
     @staticmethod

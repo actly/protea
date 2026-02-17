@@ -1,9 +1,11 @@
 """Tests for ring0.gene_pool."""
 
 import pathlib
+import subprocess
 
 import pytest
 
+from ring0.fitness import FitnessTracker
 from ring0.gene_pool import GenePool
 
 
@@ -287,4 +289,106 @@ class TestGenePoolBackfill:
                 ]
 
         added = gp.backfill(MockSkillStore())
+        assert added == 0
+
+
+def _init_git_repo(ring2_path: pathlib.Path, commits: list[tuple[str, str]]):
+    """Create a git repo with commits. Each commit is (source_code, label).
+
+    Returns list of actual commit hashes.
+    """
+    subprocess.run(["git", "init"], cwd=str(ring2_path), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(ring2_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(ring2_path), capture_output=True)
+
+    hashes = []
+    for source, _ in commits:
+        (ring2_path / "main.py").write_text(source)
+        subprocess.run(["git", "add", "main.py"], cwd=str(ring2_path), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "gen"], cwd=str(ring2_path), capture_output=True, check=True)
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(ring2_path), capture_output=True, text=True, check=True,
+        )
+        hashes.append(result.stdout.strip())
+    return hashes
+
+
+class TestBackfillFromGit:
+    def test_backfills_from_fitness_log(self, tmp_path):
+        db = tmp_path / "test.db"
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+
+        source_v1 = SAMPLE_SOURCE + "\n# gen1\n"
+        source_v2 = SAMPLE_SOURCE + "\n# gen2\n"
+        hashes = _init_git_repo(ring2, [(source_v1, ""), (source_v2, "")])
+
+        gp = GenePool(db, max_size=10)
+        ft = FitnessTracker(db)
+        ft.record(1, hashes[0], 0.85, 1.0, True)
+        ft.record(2, hashes[1], 0.90, 1.0, True)
+
+        added = gp.backfill_from_git(ring2, ft)
+        assert added == 2
+        assert gp.count() == 2
+
+    def test_skips_when_pool_full(self, tmp_path):
+        db = tmp_path / "test.db"
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+
+        hashes = _init_git_repo(ring2, [(SAMPLE_SOURCE + "\n# x\n", "")])
+
+        gp = GenePool(db, max_size=1)
+        ft = FitnessTracker(db)
+        ft.record(1, hashes[0], 0.90, 1.0, True)
+
+        # Fill the pool first.
+        gp.add(99, 0.95, SAMPLE_SOURCE + "\n# existing\n")
+        assert gp.count() == 1
+
+        added = gp.backfill_from_git(ring2, ft)
+        assert added == 0
+
+    def test_dedup_same_source(self, tmp_path):
+        db = tmp_path / "test.db"
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+
+        # One commit, but two fitness_log entries pointing to it.
+        source = SAMPLE_SOURCE + "\n# same\n"
+        hashes = _init_git_repo(ring2, [(source, "")])
+
+        gp = GenePool(db, max_size=10)
+        ft = FitnessTracker(db)
+        ft.record(1, hashes[0], 0.85, 1.0, True)
+        ft.record(2, hashes[0], 0.90, 1.0, True)
+
+        added = gp.backfill_from_git(ring2, ft)
+        assert added == 1  # dedup by source_hash
+        assert gp.count() == 1
+
+    def test_skips_low_score(self, tmp_path):
+        db = tmp_path / "test.db"
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+
+        hashes = _init_git_repo(ring2, [(SAMPLE_SOURCE + "\n# low\n", "")])
+
+        gp = GenePool(db, max_size=10)
+        ft = FitnessTracker(db)
+        ft.record(1, hashes[0], 0.50, 1.0, True)  # below 0.75 threshold
+
+        added = gp.backfill_from_git(ring2, ft)
+        assert added == 0
+
+    def test_skips_without_git_dir(self, tmp_path):
+        db = tmp_path / "test.db"
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()  # No .git
+
+        gp = GenePool(db, max_size=10)
+        ft = FitnessTracker(db)
+
+        added = gp.backfill_from_git(ring2, ft)
         assert added == 0
