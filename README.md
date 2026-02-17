@@ -7,7 +7,7 @@ Self-evolving artificial life system. The program is a living organism — it ca
 Three-ring design running on a single Mac mini:
 
 - **Ring 0 (Sentinel)** — Immutable physics layer. Supervises Ring 2, performs heartbeat monitoring, git snapshots, rollback on failure, fitness tracking, and persistent storage (SQLite). Pure Python stdlib.
-- **Ring 1 (Intelligence)** — LLM-driven evolution engine, task executor, Telegram bot, skill crystallizer, web portal. Calls Claude API for mutations, user tasks, and autonomous P1 work.
+- **Ring 1 (Intelligence)** — LLM-driven evolution engine, task executor, Telegram bot, skill crystallizer, web portal. Supports multiple LLM providers (Anthropic, OpenAI, DeepSeek) for mutations, user tasks, and autonomous P1 work.
 - **Ring 2 (Evolvable Code)** — The living code that evolves. Managed in its own git repo by Ring 0.
 
 ## Prerequisites
@@ -38,7 +38,7 @@ protea/
 │   ├── sentinel.py             # Main supervisor loop
 │   ├── heartbeat.py            # Ring 2 heartbeat monitoring
 │   ├── git_manager.py          # Git snapshot + rollback
-│   ├── fitness.py              # Fitness scoring (SQLite)
+│   ├── fitness.py              # Fitness scoring + novelty + plateau detection
 │   ├── memory.py               # Experiential memory store (SQLite)
 │   ├── skill_store.py          # Crystallized skill store (SQLite)
 │   ├── task_store.py           # Task persistence store (SQLite)
@@ -50,13 +50,16 @@ protea/
 │   ├── config.py               # Ring 1 configuration loader
 │   ├── evolver.py              # LLM-driven code evolution
 │   ├── crystallizer.py         # Skill crystallization from surviving code
-│   ├── llm_client.py           # Claude API client
+│   ├── llm_base.py             # LLM client ABC + factory
+│   ├── llm_client.py           # Anthropic Claude client
+│   ├── llm_openai.py           # OpenAI / DeepSeek client
 │   ├── task_executor.py        # P0 user tasks + P1 autonomous tasks
 │   ├── telegram_bot.py         # Telegram bot (commands + free-text)
 │   ├── telegram.py             # Telegram notifier (one-way)
 │   ├── skill_portal.py         # Web dashboard for skills
 │   ├── skill_runner.py         # Skill process manager
 │   ├── subagent.py             # Background task subagents
+│   ├── registry_client.py      # Hub registry client
 │   ├── tool_registry.py        # Tool dispatch framework
 │   ├── tools/                  # Tool implementations
 │   │   ├── filesystem.py       # read_file, write_file, edit_file, list_dir
@@ -68,16 +71,17 @@ protea/
 │   │   └── report.py           # Report generation
 │   ├── web_tools.py            # DuckDuckGo + URL fetch
 │   ├── pdf_utils.py            # PDF text extraction
-│   └── prompts.py              # Evolution prompt templates
+│   └── prompts.py              # Evolution + crystallization prompts
 │
 ├── ring2/                      # Ring 2 — Evolvable code
 │   └── main.py                 # The living program
 │
 ├── config/config.toml          # Configuration
 ├── data/                       # SQLite databases (auto-created)
-├── tests/                      # 817+ tests
+├── tests/                      # 889 tests
 │   ├── test_ring0/             # Ring 0 unit tests
 │   └── test_ring1/             # Ring 1 unit tests
+├── .github/workflows/ci.yml   # CI (Python 3.11 + 3.13)
 └── run.py                      # Entry point
 ```
 
@@ -85,11 +89,46 @@ protea/
 
 1. **Sentinel** starts Ring 2 as a subprocess
 2. Ring 2 writes a `.heartbeat` file every 2s; Sentinel checks freshness
-3. If Ring 2 **survives** `max_runtime_sec`: record success, crystallize skills, evolve code, advance generation
+3. If Ring 2 **survives** `max_runtime_sec`: record success, score fitness, crystallize skills, evolve code, advance generation
 4. If Ring 2 **dies**: record failure, rollback to last good commit, evolve from rollback base, restart
 5. Each generation gets deterministic parameters from a seeded PRNG
 6. **CommitWatcher** detects new git commits and triggers `os.execv()` restart
 7. **TaskStore** persists queued tasks to SQLite — they survive restarts
+
+## Evolution & Fitness
+
+Fitness is scored 0.0–1.0 with six components:
+
+| Component | Weight | Description |
+|-----------|--------|-------------|
+| Base survival | 0.50 | Survived max_runtime_sec |
+| Output volume | 0.10 | Meaningful non-empty lines (saturates at 50) |
+| Output diversity | 0.10 | Unique lines / total lines |
+| **Novelty** | 0.10 | Jaccard distance vs recent generations' output |
+| Structured output | 0.10 | JSON, tables, key:value patterns |
+| **Functional bonus** | 0.05 | Real I/O, HTTP, file operations detected |
+| Error penalty | −0.10 | Traceback/error/exception lines |
+
+**Adaptive evolution** saves tokens: when scores plateau (last N within epsilon), LLM evolution calls are skipped unless a user directive is pending. Persistent bugs (errors recurring across 2+ generations) are flagged as "must fix" in evolution prompts.
+
+## Multi-LLM Provider Support
+
+Protea supports multiple LLM providers via a unified client interface:
+
+| Provider | Config | Default Model |
+|----------|--------|---------------|
+| Anthropic (default) | `CLAUDE_API_KEY` env var | claude-sonnet-4-5 |
+| OpenAI | `[ring1.llm]` section | gpt-4o |
+| DeepSeek | `[ring1.llm]` section | deepseek-chat |
+
+To use a non-Anthropic provider, add to `config/config.toml`:
+
+```toml
+[ring1.llm]
+provider = "deepseek"
+api_key_env = "DEEPSEEK_API_KEY"
+model = "deepseek-chat"
+```
 
 ## Telegram Commands
 
@@ -123,19 +162,22 @@ Skill Portal runs on a configurable HTTP port, providing a web dashboard for bro
 
 All settings live in `config/config.toml`:
 
-- **ring0**: heartbeat intervals, resource limits, evolution seed, skill cap
+- **ring0**: heartbeat intervals, resource limits, evolution seed/cooldown, plateau detection, skill cap
 - **ring1** (via env): `CLAUDE_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- **ring1.llm**: optional multi-provider LLM config (provider, model, api_key_env, api_url)
 - P1 autonomous tasks: idle threshold, check interval, enable/disable
 
 ## Status
 
-- [x] Ring 0 Sentinel — heartbeat, git, fitness, memory, skills, task persistence
-- [x] Ring 1 Evolution — LLM mutations, crystallization, P0/P1 tasks
+- [x] Ring 0 Sentinel — heartbeat, git, fitness (novelty + functional scoring), memory, skills, task persistence
+- [x] Ring 1 Evolution — LLM mutations, adaptive evolution, crystallization, P0/P1 tasks
+- [x] Multi-LLM — Anthropic, OpenAI, DeepSeek via unified client
 - [x] Telegram Bot — bidirectional commands + free-text tasks
 - [x] Skill Portal — web dashboard
 - [x] CommitWatcher — auto-restart on deploy
 - [x] Task persistence — survives restarts via SQLite
-- [x] 817+ tests passing
+- [x] CI — GitHub Actions (Python 3.11 + 3.13)
+- [x] 889 tests passing
 
 ## Registry
 
