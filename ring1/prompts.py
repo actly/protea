@@ -82,6 +82,7 @@ def build_evolution_prompt(
     is_plateaued: bool = False,
     gene_pool: list[dict] | None = None,
     evolution_intent: dict | None = None,
+    user_profile_summary: str = "",
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call."""
     parts: list[str] = []
@@ -160,6 +161,13 @@ def build_evolution_prompt(
                 content = content[:150] + "..."
             parts.append(f"- {content}")
         parts.append("Evolve capabilities directly useful for these tasks.")
+        parts.append("")
+
+    # User profile — aggregated interests and directions
+    if user_profile_summary:
+        parts.append("## User Profile")
+        parts.append(user_profile_summary)
+        parts.append("Align evolution with the user's primary interests and active domains.")
         parts.append("")
 
     # Existing skills — avoid duplication + highlight unused ones
@@ -399,3 +407,49 @@ def parse_crystallize_response(response: str) -> dict | None:
     if data.get("action") not in _VALID_ACTIONS:
         return None
     return data
+
+
+# ---------------------------------------------------------------------------
+# Memory Curation
+# ---------------------------------------------------------------------------
+
+MEMORY_CURATION_SYSTEM_PROMPT = """\
+You are the memory curator for Protea, a self-evolving AI system.
+Your task: review memory entries and decide which to keep, discard, or summarize.
+
+## Decision criteria
+- keep: Unique insights, user preferences, important lessons, recurring patterns
+- summarize: Valuable but verbose — condense to 1-2 sentences
+- discard: Redundant, outdated, trivial, or superseded by newer memories
+
+## Response format
+Respond with a JSON array (no markdown fences):
+[{"id": 1, "action": "keep"}, {"id": 2, "action": "summarize", "summary": "..."}, ...]
+"""
+
+
+def build_memory_curation_prompt(candidates: list[dict]) -> tuple[str, str]:
+    """Build (system_prompt, user_message) for memory curation.
+
+    Args:
+        candidates: List of dicts with id, entry_type/type, content, importance.
+
+    Returns:
+        (system_prompt, user_message) tuple.
+    """
+    parts = ["## Memory Entries to Review\n"]
+    for c in candidates:
+        entry_id = c.get("id", "?")
+        entry_type = c.get("entry_type", c.get("type", "unknown"))
+        content = c.get("content", "")
+        importance = c.get("importance", 0.5)
+        # Truncate long content.
+        if len(content) > 200:
+            content = content[:200] + "..."
+        parts.append(
+            f"- **ID {entry_id}** [{entry_type}] (importance: {importance:.2f}): {content}"
+        )
+    parts.append("")
+    parts.append(f"Total: {len(candidates)} entries. Review each and decide: keep, discard, or summarize.")
+
+    return MEMORY_CURATION_SYSTEM_PROMPT, "\n".join(parts)

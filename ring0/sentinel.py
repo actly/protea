@@ -133,7 +133,7 @@ def _should_evolve(state, cooldown_sec: int, fitness=None, plateau_window: int =
     return True, plateaued
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None):
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary=""):
     """Best-effort evolution.  Returns True if new code was written."""
     try:
         from ring1.config import load_ring1_config
@@ -223,6 +223,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             is_plateaued=is_plateaued,
             gene_pool=genes,
             evolution_intent=evolution_intent,
+            user_profile_summary=user_profile_summary,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
@@ -404,14 +405,70 @@ def _create_portal(project_root, cfg, skill_store, skill_runner):
         return None
 
 
-def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None, skill_store=None, skill_runner=None, task_store=None, registry_client=None):
+def _create_user_profiler(db_path):
+    """Best-effort UserProfiler creation.  Returns None on any error."""
+    try:
+        from ring0.user_profile import UserProfiler
+        return UserProfiler(db_path)
+    except Exception as exc:
+        log.debug("UserProfiler not available: %s", exc)
+        return None
+
+
+def _create_embedding_provider(cfg):
+    """Best-effort EmbeddingProvider creation.  Returns None on any error."""
+    try:
+        from ring1.embeddings import create_embedding_provider
+        provider = create_embedding_provider(cfg)
+        # Return None if it's a NoOp (saves passing it around)
+        from ring1.embeddings import NoOpEmbedding
+        if isinstance(provider, NoOpEmbedding):
+            return None
+        return provider
+    except Exception as exc:
+        log.debug("EmbeddingProvider not available: %s", exc)
+        return None
+
+
+def _create_memory_curator(project_root):
+    """Best-effort MemoryCurator creation.  Returns None on any error."""
+    try:
+        from ring1.config import load_ring1_config
+        from ring1.memory_curator import MemoryCurator
+
+        r1_config = load_ring1_config(project_root)
+        if not r1_config.has_llm_config():
+            return None
+        client = r1_config.get_llm_client()
+        return MemoryCurator(client)
+    except Exception as exc:
+        log.debug("MemoryCurator not available: %s", exc)
+        return None
+
+
+def _create_dashboard(project_root, cfg, **data_sources):
+    """Best-effort Dashboard creation.  Returns None on any error."""
+    try:
+        from ring1.dashboard import create_dashboard, start_dashboard_thread
+
+        dashboard = create_dashboard(project_root, cfg, **data_sources)
+        if dashboard:
+            start_dashboard_thread(dashboard)
+            log.info("Dashboard started")
+        return dashboard
+    except Exception as exc:
+        log.debug("Dashboard not available: %s", exc)
+        return None
+
+
+def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None, skill_store=None, skill_runner=None, task_store=None, registry_client=None, user_profiler=None, embedding_provider=None):
     """Best-effort task executor creation.  Returns None on any error."""
     try:
         from ring1.config import load_ring1_config
         from ring1.task_executor import create_executor, start_executor_thread
 
         r1_config = load_ring1_config(project_root)
-        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client)
+        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client, user_profiler=user_profiler, embedding_provider=embedding_provider)
         if executor:
             thread = start_executor_thread(executor)
             state.executor_thread = thread
@@ -454,7 +511,10 @@ def run(project_root: pathlib.Path) -> None:
     skill_store = _create_skill_store(db_path)
     gene_pool = _create_gene_pool(db_path)
     task_store = _create_task_store(db_path)
-    
+    user_profiler = _create_user_profiler(db_path)
+    embedding_provider = _create_embedding_provider(cfg)
+    memory_curator = _create_memory_curator(project_root)
+
     # Initialize TaskGenerator for progressive difficulty
     from ring1.task_generator import TaskGenerator
     task_generator = TaskGenerator(
@@ -517,12 +577,24 @@ def run(project_root: pathlib.Path) -> None:
 
     # Task executor for P0 user tasks.
     reply_fn = bot._send_reply if bot else (lambda text: None)
-    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client)
+    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client, user_profiler=user_profiler, embedding_provider=embedding_provider)
     # Expose subagent_manager on state for /background command.
     state.subagent_manager = getattr(executor, "subagent_manager", None) if executor else None
 
     # Skill Portal — unified web dashboard.
     portal = _create_portal(project_root, cfg, skill_store, skill_runner)
+
+    # Dashboard — system state visualization.
+    dashboard = _create_dashboard(
+        project_root, cfg,
+        memory_store=memory_store,
+        skill_store=skill_store,
+        fitness_tracker=fitness,
+        user_profiler=user_profiler,
+        gene_pool=gene_pool,
+        task_store=task_store,
+        state=state,
+    )
 
     # Commit watcher — auto-restart on new commits.
     commit_watcher = CommitWatcher(project_root, state.restart_event)
@@ -696,6 +768,13 @@ def run(project_root: pathlib.Path) -> None:
                             crash_logs = memory_store.get_by_type("crash_log", limit=3)
                         except Exception:
                             pass
+                    # Get user profile summary for evolution.
+                    profile_summary = ""
+                    if user_profiler:
+                        try:
+                            profile_summary = user_profiler.get_profile_summary()
+                        except Exception:
+                            pass
                     evolved = _try_evolve(
                         project_root, fitness, ring2_path,
                         generation, params, True, notifier,
@@ -705,6 +784,7 @@ def run(project_root: pathlib.Path) -> None:
                         crash_logs=crash_logs,
                         is_plateaued=plateaued,
                         gene_pool=gene_pool,
+                        user_profile_summary=profile_summary,
                     )
                 if evolved:
                     state.last_evolution_time = time.time()
@@ -721,6 +801,23 @@ def run(project_root: pathlib.Path) -> None:
 
                 # Next generation.
                 generation += 1
+
+                # Periodic maintenance: compact memory + decay profile (every 10 generations).
+                if generation % 10 == 0:
+                    if memory_store:
+                        try:
+                            compact_result = memory_store.compact(generation, curator=memory_curator)
+                            log.info("Memory compaction: %s", compact_result)
+                        except Exception:
+                            log.debug("Memory compaction failed (non-fatal)", exc_info=True)
+                    if user_profiler:
+                        try:
+                            removed = user_profiler.apply_decay()
+                            if removed:
+                                log.info("Profile decay: removed %d stale topics", removed)
+                        except Exception:
+                            log.debug("Profile decay failed (non-fatal)", exc_info=True)
+
                 params = generate_params(generation, seed)
                 log.info("Starting generation %d (params: %s)", generation, params)
                 proc = _start_ring2(ring2_path, heartbeat_path)
@@ -799,6 +896,13 @@ def run(project_root: pathlib.Path) -> None:
                         crash_logs = memory_store.get_by_type("crash_log", limit=3)
                     except Exception:
                         pass
+                # Get user profile summary for evolution.
+                profile_summary = ""
+                if user_profiler:
+                    try:
+                        profile_summary = user_profiler.get_profile_summary()
+                    except Exception:
+                        pass
                 evolved = _try_evolve(
                     project_root, fitness, ring2_path,
                     generation, params, False, notifier,
@@ -808,6 +912,7 @@ def run(project_root: pathlib.Path) -> None:
                     crash_logs=crash_logs,
                     is_plateaued=False,  # failure path — focus on fixing, not novelty
                     gene_pool=gene_pool,
+                    user_profile_summary=profile_summary,
                 )
             if evolved:
                 state.last_evolution_time = time.time()
@@ -834,6 +939,8 @@ def run(project_root: pathlib.Path) -> None:
         log.info("Sentinel shutting down (KeyboardInterrupt)")
     finally:
         commit_watcher.stop()
+        if dashboard:
+            dashboard.stop()
         if portal:
             portal.stop()
         if skill_runner and skill_runner.is_running():

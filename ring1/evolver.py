@@ -86,6 +86,7 @@ class Evolver:
         is_plateaued: bool = False,
         gene_pool: list[dict] | None = None,
         evolution_intent: dict | None = None,
+        user_profile_summary: str = "",
     ) -> EvolutionResult:
         """Run one evolution cycle.
 
@@ -129,6 +130,7 @@ class Evolver:
             is_plateaued=is_plateaued,
             gene_pool=gene_pool,
             evolution_intent=evolution_intent,
+            user_profile_summary=user_profile_summary,
         )
 
         # 4. Call Claude API.

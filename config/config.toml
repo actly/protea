@@ -42,6 +42,17 @@ enabled = false
 host = "127.0.0.1"
 port = 8888
 
+[ring1.dashboard]
+enabled = true
+host = "127.0.0.1"
+port = 8899
+
+[ring1.embeddings]
+provider = "none"               # "openai" | "none"
+api_key_env = "OPENAI_API_KEY"  # environment variable name
+model = "text-embedding-3-small"
+dimensions = 256
+
 # [ring1.llm]
 # provider = "openai"         # anthropic | openai | deepseek
 # api_key_env = "OPENAI_API_KEY"
