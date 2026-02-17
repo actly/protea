@@ -7,6 +7,7 @@ to the last known-good commit, evolves from that base, and restarts.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import pathlib
@@ -168,8 +169,18 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             log.warning("LLM API key not configured — skipping evolution")
             return False
 
-        # Compact context to save tokens: fewer memories.
-        memories = memory_store.get_recent(3) if memory_store else []
+        # Compact context to save tokens: only high-value memories.
+        # Exclude observations — they're noisy per-generation logs that
+        # crowd out useful reflections, directives, and task history.
+        memories = []
+        if memory_store:
+            try:
+                for t in ("reflection", "directive", "crash_log"):
+                    memories.extend(memory_store.get_by_type(t, limit=2))
+                memories.sort(key=lambda m: m.get("id", 0), reverse=True)
+                memories = memories[:3]
+            except Exception:
+                memories = []
 
         # Gather task history and skills for directed evolution.
         task_history = []
@@ -232,6 +243,17 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             evolution_intent["signals"],
         )
 
+        # Persist intent to memory so the Dashboard intent timeline works.
+        if memory_store:
+            try:
+                intent_content = f"{evolution_intent['intent']}: {', '.join(evolution_intent.get('signals', []))}"
+                memory_store.add(
+                    generation, "evolution_intent", intent_content,
+                    metadata=evolution_intent,
+                )
+            except Exception:
+                pass
+
         evolver = Evolver(r1_config, fitness, memory_store=memory_store)
         result = evolver.evolve(
             ring2_path=ring2_path,
@@ -252,12 +274,27 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
             if result.metadata:
+                blast = result.metadata.get("blast_radius", {})
                 log.info(
                     "Evolution metadata: intent=%s scope=%s lines_changed=%d",
                     result.metadata.get("intent"),
-                    result.metadata.get("blast_radius", {}).get("scope"),
-                    result.metadata.get("blast_radius", {}).get("lines_changed", 0),
+                    blast.get("scope"),
+                    blast.get("lines_changed", 0),
                 )
+                # Update the intent memory entry with blast_radius.
+                if memory_store and blast:
+                    try:
+                        intents = memory_store.get_by_type("evolution_intent", limit=1)
+                        if intents and intents[0].get("generation") == generation:
+                            meta = intents[0].get("metadata", {})
+                            meta["blast_radius"] = blast
+                            with memory_store._connect() as con:
+                                con.execute(
+                                    "UPDATE memory SET metadata = ? WHERE id = ?",
+                                    (json.dumps(meta), intents[0]["id"]),
+                                )
+                    except Exception:
+                        pass
             return True
         else:
             log.warning("Evolution failed: %s", result.reason)
