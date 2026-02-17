@@ -11,7 +11,7 @@ from ring1.llm_client import ClaudeClient, LLMError
 
 class TestClaudeClientInit:
     def test_missing_api_key_raises(self):
-        with pytest.raises(LLMError, match="CLAUDE_API_KEY"):
+        with pytest.raises(LLMError, match="API key is not set"):
             ClaudeClient(api_key="")
 
     def test_valid_init(self):

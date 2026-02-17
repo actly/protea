@@ -138,8 +138,8 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         from ring1.evolver import Evolver
 
         r1_config = load_ring1_config(project_root)
-        if not r1_config.claude_api_key:
-            log.warning("CLAUDE_API_KEY not set — skipping evolution")
+        if not r1_config.has_llm_config():
+            log.warning("LLM API key not configured — skipping evolution")
             return False
 
         # Compact context to save tokens: fewer memories.
@@ -212,8 +212,8 @@ def _try_crystallize(project_root, skill_store, source_code, output, generation,
         from ring1.crystallizer import Crystallizer
 
         r1_config = load_ring1_config(project_root)
-        if not r1_config.claude_api_key:
-            log.warning("CLAUDE_API_KEY not set — skipping crystallization")
+        if not r1_config.has_llm_config():
+            log.warning("LLM API key not configured — skipping crystallization")
             return None
 
         crystallizer = Crystallizer(r1_config, skill_store)

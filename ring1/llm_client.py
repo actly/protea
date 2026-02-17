@@ -35,7 +35,7 @@ class ClaudeClient(LLMClient):
         max_tokens: int = 4096,
     ) -> None:
         if not api_key:
-            raise LLMError("CLAUDE_API_KEY is not set")
+            raise LLMError("API key is not set")
         self.api_key = api_key
         self.model = model
         self.max_tokens = max_tokens

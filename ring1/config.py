@@ -30,6 +30,13 @@ class Ring1Config(NamedTuple):
     llm_max_tokens: int = 0      # 0 = use claude_max_tokens
     llm_api_url: str = ""        # custom API URL override
 
+    def has_llm_config(self) -> bool:
+        """Check whether any LLM provider is configured with an API key."""
+        provider = self.llm_provider or "anthropic"
+        if provider == "anthropic":
+            return bool(self.claude_api_key)
+        return bool(self.llm_api_key_env and os.environ.get(self.llm_api_key_env))
+
     def get_llm_client(self):
         """Create an LLM client from config, with backward compatibility.
 

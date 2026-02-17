@@ -63,6 +63,68 @@ class TestLoadDotenv:
         assert "EMPTY_VAL_TEST" not in os.environ
 
 
+class TestHasLlmConfig:
+    def test_anthropic_with_key(self):
+        cfg = Ring1Config(
+            claude_api_key="sk-test", claude_model="m", claude_max_tokens=1,
+            telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
+            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
+            p1_check_interval_sec=1,
+        )
+        assert cfg.has_llm_config() is True
+
+    def test_anthropic_without_key(self):
+        cfg = Ring1Config(
+            claude_api_key="", claude_model="m", claude_max_tokens=1,
+            telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
+            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
+            p1_check_interval_sec=1,
+        )
+        assert cfg.has_llm_config() is False
+
+    def test_openai_with_env_key(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        cfg = Ring1Config(
+            claude_api_key="", claude_model="m", claude_max_tokens=1,
+            telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
+            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
+            p1_check_interval_sec=1,
+            llm_provider="openai", llm_api_key_env="OPENAI_API_KEY",
+        )
+        assert cfg.has_llm_config() is True
+
+    def test_openai_without_env_key(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg = Ring1Config(
+            claude_api_key="", claude_model="m", claude_max_tokens=1,
+            telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
+            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
+            p1_check_interval_sec=1,
+            llm_provider="openai", llm_api_key_env="OPENAI_API_KEY",
+        )
+        assert cfg.has_llm_config() is False
+
+    def test_non_anthropic_missing_env_name(self):
+        cfg = Ring1Config(
+            claude_api_key="", claude_model="m", claude_max_tokens=1,
+            telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
+            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
+            p1_check_interval_sec=1,
+            llm_provider="deepseek", llm_api_key_env="",
+        )
+        assert cfg.has_llm_config() is False
+
+    def test_empty_provider_defaults_to_anthropic(self):
+        cfg = Ring1Config(
+            claude_api_key="sk-test", claude_model="m", claude_max_tokens=1,
+            telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
+            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
+            p1_check_interval_sec=1,
+            llm_provider="",
+        )
+        assert cfg.has_llm_config() is True
+
+
 class TestLoadRing1Config:
     def _make_project(self, tmp_path, toml_extra="", env_lines=""):
         """Create a minimal project directory with config.toml and .env."""
