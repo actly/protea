@@ -41,6 +41,7 @@ protea/
 │   ├── fitness.py              # Fitness scoring + novelty + plateau detection
 │   ├── memory.py               # Experiential memory store (SQLite)
 │   ├── skill_store.py          # Crystallized skill store (SQLite)
+│   ├── gene_pool.py            # Gene pool — top-N evolutionary inheritance (SQLite)
 │   ├── task_store.py           # Task persistence store (SQLite)
 │   ├── parameter_seed.py       # Deterministic parameter generation
 │   ├── resource_monitor.py     # CPU/memory/disk monitoring
@@ -78,7 +79,7 @@ protea/
 │
 ├── config/config.toml          # Configuration
 ├── data/                       # SQLite databases (auto-created)
-├── tests/                      # 889 tests
+├── tests/                      # 918 tests
 │   ├── test_ring0/             # Ring 0 unit tests
 │   └── test_ring1/             # Ring 1 unit tests
 ├── .github/workflows/ci.yml   # CI (Python 3.11 + 3.13)
@@ -110,6 +111,12 @@ Fitness is scored 0.0–1.0 with six components:
 | Error penalty | −0.10 | Traceback/error/exception lines |
 
 **Adaptive evolution** saves tokens: when scores plateau (last N within epsilon), LLM evolution calls are skipped unless a user directive is pending. Persistent bugs (errors recurring across 2+ generations) are flagged as "must fix" in evolution prompts.
+
+## Gene Pool — Evolutionary Inheritance
+
+Evolved code patterns are preserved across generations via a **gene pool**. When Ring 2 survives, its source code is analysed (AST with regex fallback) to extract a compact gene summary (~200–500 tokens) containing class/function signatures and docstrings, with heartbeat boilerplate filtered out.
+
+The top 10 genes (by fitness score) are stored in SQLite. During evolution, the best 2–3 gene summaries are injected into the LLM prompt as **Inherited Patterns**, so the evolver can build upon proven code instead of starting from scratch. On first startup, existing crystallized skills are backfilled into the gene pool.
 
 ## Multi-LLM Provider Support
 
@@ -175,9 +182,10 @@ All settings live in `config/config.toml`:
 - [x] Telegram Bot — bidirectional commands + free-text tasks
 - [x] Skill Portal — web dashboard
 - [x] CommitWatcher — auto-restart on deploy
+- [x] Gene Pool — AST-based code inheritance across generations
 - [x] Task persistence — survives restarts via SQLite
 - [x] CI — GitHub Actions (Python 3.11 + 3.13)
-- [x] 889 tests passing
+- [x] 918 tests passing
 
 ## Registry
 
