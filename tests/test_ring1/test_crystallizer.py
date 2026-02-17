@@ -42,10 +42,9 @@ class TestCrystallizeCreate:
             '"tags": ["web"]}'
         )
 
-        with patch("ring1.crystallizer.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_resp
-            c = Crystallizer(config, store)
-            result = c.crystallize(SOURCE, "output", generation=5)
+        config.get_llm_client.return_value.send_message.return_value = llm_resp
+        c = Crystallizer(config, store)
+        result = c.crystallize(SOURCE, "output", generation=5)
 
         assert result.action == "create"
         assert result.skill_name == "web_dashboard"
@@ -66,10 +65,9 @@ class TestCrystallizeCreate:
             '"description": "New", "prompt_template": "t", "tags": []}'
         )
 
-        with patch("ring1.crystallizer.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_resp
-            c = Crystallizer(config, store)
-            result = c.crystallize(SOURCE, "", generation=1, skill_cap=5)
+        config.get_llm_client.return_value.send_message.return_value = llm_resp
+        c = Crystallizer(config, store)
+        result = c.crystallize(SOURCE, "", generation=1, skill_cap=5)
 
         assert result.action == "create"
         store.deactivate.assert_called_once_with("s0")
@@ -85,10 +83,9 @@ class TestCrystallizeCreate:
             '"description": "New desc", "prompt_template": "t", "tags": []}'
         )
 
-        with patch("ring1.crystallizer.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_resp
-            c = Crystallizer(config, store)
-            result = c.crystallize(SOURCE, "", generation=1)
+        config.get_llm_client.return_value.send_message.return_value = llm_resp
+        c = Crystallizer(config, store)
+        result = c.crystallize(SOURCE, "", generation=1)
 
         assert result.action == "update"
         assert result.skill_name == "existing"
@@ -109,10 +106,9 @@ class TestCrystallizeUpdate:
             '"description": "Updated", "prompt_template": "t", "tags": ["web"]}'
         )
 
-        with patch("ring1.crystallizer.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_resp
-            c = Crystallizer(config, store)
-            result = c.crystallize(SOURCE, "", generation=2)
+        config.get_llm_client.return_value.send_message.return_value = llm_resp
+        c = Crystallizer(config, store)
+        result = c.crystallize(SOURCE, "", generation=2)
 
         assert result.action == "update"
         assert result.skill_name == "web_dashboard"
@@ -130,10 +126,9 @@ class TestCrystallizeUpdate:
             '"description": "d", "prompt_template": "t", "tags": []}'
         )
 
-        with patch("ring1.crystallizer.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_resp
-            c = Crystallizer(config, store)
-            result = c.crystallize(SOURCE, "", generation=1)
+        config.get_llm_client.return_value.send_message.return_value = llm_resp
+        c = Crystallizer(config, store)
+        result = c.crystallize(SOURCE, "", generation=1)
 
         assert result.action == "skip"
         assert "not found" in result.reason
@@ -148,10 +143,9 @@ class TestCrystallizeSkip:
 
         llm_resp = '{"action": "skip", "reason": "already covered by web_dashboard"}'
 
-        with patch("ring1.crystallizer.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_resp
-            c = Crystallizer(config, store)
-            result = c.crystallize(SOURCE, "", generation=1)
+        config.get_llm_client.return_value.send_message.return_value = llm_resp
+        c = Crystallizer(config, store)
+        result = c.crystallize(SOURCE, "", generation=1)
 
         assert result.action == "skip"
         assert "already covered" in result.reason
@@ -164,12 +158,11 @@ class TestCrystallizeErrors:
         config = _make_config()
         store = _make_skill_store()
 
-        from ring1.llm_client import LLMError
+        from ring1.llm_base import LLMError
 
-        with patch("ring1.crystallizer.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.side_effect = LLMError("timeout")
-            c = Crystallizer(config, store)
-            result = c.crystallize(SOURCE, "", generation=1)
+        config.get_llm_client.return_value.send_message.side_effect = LLMError("timeout")
+        c = Crystallizer(config, store)
+        result = c.crystallize(SOURCE, "", generation=1)
 
         assert result.action == "error"
         assert "LLM error" in result.reason
@@ -178,10 +171,9 @@ class TestCrystallizeErrors:
         config = _make_config()
         store = _make_skill_store()
 
-        with patch("ring1.crystallizer.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = "not valid json"
-            c = Crystallizer(config, store)
-            result = c.crystallize(SOURCE, "", generation=1)
+        config.get_llm_client.return_value.send_message.return_value = "not valid json"
+        c = Crystallizer(config, store)
+        result = c.crystallize(SOURCE, "", generation=1)
 
         assert result.action == "error"
         assert "parse" in result.reason
@@ -192,10 +184,9 @@ class TestCrystallizeErrors:
 
         llm_resp = '{"action": "create", "description": "d", "prompt_template": "t"}'
 
-        with patch("ring1.crystallizer.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_resp
-            c = Crystallizer(config, store)
-            result = c.crystallize(SOURCE, "", generation=1)
+        config.get_llm_client.return_value.send_message.return_value = llm_resp
+        c = Crystallizer(config, store)
+        result = c.crystallize(SOURCE, "", generation=1)
 
         assert result.action == "error"
         assert "missing" in result.reason
@@ -205,9 +196,8 @@ class TestCrystallizeErrors:
         store = _make_skill_store()
         store.get_active.side_effect = Exception("db locked")
 
-        with patch("ring1.crystallizer.ClaudeClient"):
-            c = Crystallizer(config, store)
-            result = c.crystallize(SOURCE, "", generation=1)
+        c = Crystallizer(config, store)
+        result = c.crystallize(SOURCE, "", generation=1)
 
         assert result.action == "error"
         assert "skill store" in result.reason

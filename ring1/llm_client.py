@@ -13,6 +13,8 @@ import urllib.error
 import urllib.request
 from typing import Callable
 
+from ring1.llm_base import LLMClient, LLMError  # noqa: F401 — re-export LLMError
+
 log = logging.getLogger("protea.llm_client")
 
 API_URL = "https://api.anthropic.com/v1/messages"
@@ -23,11 +25,7 @@ _MAX_RETRIES = 3
 _BASE_DELAY = 2.0  # seconds
 
 
-class LLMError(Exception):
-    """Raised when the Claude API call fails after all retries."""
-
-
-class ClaudeClient:
+class ClaudeClient(LLMClient):
     """Minimal Claude Messages API client (no third-party deps)."""
 
     def __init__(

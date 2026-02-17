@@ -11,7 +11,7 @@ import logging
 import pathlib
 from typing import NamedTuple
 
-from ring1.llm_client import ClaudeClient, LLMError
+from ring1.llm_base import LLMClient, LLMError
 from ring1.prompts import build_evolution_prompt, extract_python_code, extract_reflection
 
 log = logging.getLogger("protea.evolver")
@@ -63,15 +63,11 @@ class Evolver:
         self.config = config
         self.fitness = fitness_tracker
         self.memory_store = memory_store
-        self._client: ClaudeClient | None = None
+        self._client: LLMClient | None = None
 
-    def _get_client(self) -> ClaudeClient:
+    def _get_client(self) -> LLMClient:
         if self._client is None:
-            self._client = ClaudeClient(
-                api_key=self.config.claude_api_key,
-                model=self.config.claude_model,
-                max_tokens=self.config.claude_max_tokens,
-            )
+            self._client = self.config.get_llm_client()
         return self._client
 
     def evolve(

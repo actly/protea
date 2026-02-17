@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 
-from ring1.llm_client import ClaudeClient, LLMError
+from ring1.llm_base import LLMClient, LLMError
 from ring1.tool_registry import ToolRegistry
 
 log = logging.getLogger("protea.subagent")
@@ -85,7 +85,7 @@ class SubagentManager:
 
     def __init__(
         self,
-        client: ClaudeClient,
+        client: LLMClient,
         registry: ToolRegistry,
         reply_fn,
         max_concurrent: int = 3,

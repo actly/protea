@@ -92,10 +92,9 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_response
-            evolver = Evolver(config, fitness)
-            result = evolver.evolve(ring2, generation=1, params={}, survived=True)
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=1, params={}, survived=True)
 
         assert result.success is True
         assert result.reason == "OK"
@@ -120,11 +119,10 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        from ring1.llm_client import LLMError
-        with patch("ring1.evolver.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.side_effect = LLMError("timeout")
-            evolver = Evolver(config, fitness)
-            result = evolver.evolve(ring2, generation=0, params={}, survived=True)
+        from ring1.llm_base import LLMError
+        config.get_llm_client.return_value.send_message.side_effect = LLMError("timeout")
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=0, params={}, survived=True)
 
         assert result.success is False
         assert "LLM error" in result.reason
@@ -137,10 +135,9 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = "Sorry, no code today."
-            evolver = Evolver(config, fitness)
-            result = evolver.evolve(ring2, generation=0, params={}, survived=True)
+        config.get_llm_client.return_value.send_message.return_value = "Sorry, no code today."
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=0, params={}, survived=True)
 
         assert result.success is False
         assert "No code block" in result.reason
@@ -154,10 +151,9 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = bad_code
-            evolver = Evolver(config, fitness)
-            result = evolver.evolve(ring2, generation=0, params={}, survived=True)
+        config.get_llm_client.return_value.send_message.return_value = bad_code
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=0, params={}, survived=True)
 
         assert result.success is False
         assert "Validation" in result.reason
@@ -171,10 +167,9 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_response
-            evolver = Evolver(config, fitness)
-            result = evolver.evolve(ring2, generation=0, params={}, survived=True)
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=0, params={}, survived=True)
 
         assert result.success is True
         written = (ring2 / "main.py").read_text()
@@ -190,10 +185,9 @@ class TestEvolver:
         config = _make_config(max_prompt_history=7)
         fitness = _make_fitness()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_response
-            evolver = Evolver(config, fitness)
-            evolver.evolve(ring2, generation=3, params={}, survived=True)
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        evolver = Evolver(config, fitness)
+        evolver.evolve(ring2, generation=3, params={}, survived=True)
 
         fitness.get_history.assert_called_once_with(limit=7)
         fitness.get_best.assert_called_once_with(n=5)
@@ -214,9 +208,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient, \
-             patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
-            MockClient.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
             evolver.evolve(ring2, generation=1, params={}, survived=True,
@@ -237,9 +230,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient, \
-             patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
-            MockClient.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
             evolver.evolve(ring2, generation=1, params={}, survived=True)
@@ -260,9 +252,8 @@ class TestEvolver:
         fitness = _make_fitness()
         memories = [{"generation": 1, "entry_type": "observation", "content": "test"}]
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient, \
-             patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
-            MockClient.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
             evolver.evolve(ring2, generation=1, params={}, survived=True,
@@ -287,10 +278,9 @@ class TestEvolver:
         fitness = _make_fitness()
         memory_store = MagicMock()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_response
-            evolver = Evolver(config, fitness, memory_store=memory_store)
-            result = evolver.evolve(ring2, generation=5, params={}, survived=True)
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        evolver = Evolver(config, fitness, memory_store=memory_store)
+        result = evolver.evolve(ring2, generation=5, params={}, survived=True)
 
         assert result.success is True
         memory_store.add.assert_called_once_with(
@@ -308,10 +298,9 @@ class TestEvolver:
         fitness = _make_fitness()
         memory_store = MagicMock()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_response
-            evolver = Evolver(config, fitness, memory_store=memory_store)
-            evolver.evolve(ring2, generation=1, params={}, survived=True)
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        evolver = Evolver(config, fitness, memory_store=memory_store)
+        evolver.evolve(ring2, generation=1, params={}, survived=True)
 
         memory_store.add.assert_not_called()
 
@@ -328,10 +317,9 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient:
-            MockClient.return_value.send_message.return_value = llm_response
-            evolver = Evolver(config, fitness)  # no memory_store
-            result = evolver.evolve(ring2, generation=1, params={}, survived=True)
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        evolver = Evolver(config, fitness)  # no memory_store
+        result = evolver.evolve(ring2, generation=1, params={}, survived=True)
 
         assert result.success is True
 
@@ -346,9 +334,8 @@ class TestEvolver:
         fitness = _make_fitness()
         task_history = [{"content": "test task"}]
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient, \
-             patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
-            MockClient.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
             evolver.evolve(ring2, generation=1, params={}, survived=True,
@@ -369,9 +356,8 @@ class TestEvolver:
         fitness = _make_fitness()
         skills = [{"name": "greet", "description": "Greeting"}]
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient, \
-             patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
-            MockClient.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
             evolver.evolve(ring2, generation=1, params={}, survived=True,
@@ -391,9 +377,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient, \
-             patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
-            MockClient.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
             evolver.evolve(ring2, generation=1, params={}, survived=True)
@@ -414,9 +399,8 @@ class TestEvolver:
         fitness = _make_fitness()
         crash_logs = [{"generation": 1, "content": "Gen 1 died."}]
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient, \
-             patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
-            MockClient.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
             evolver.evolve(ring2, generation=2, params={}, survived=False,
@@ -436,9 +420,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        with patch("ring1.evolver.ClaudeClient") as MockClient, \
-             patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
-            MockClient.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
             evolver.evolve(ring2, generation=1, params={}, survived=True)

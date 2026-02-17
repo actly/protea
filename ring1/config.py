@@ -24,6 +24,43 @@ class Ring1Config(NamedTuple):
     workspace_path: str = "."
     shell_timeout: int = 30
     max_tool_rounds: int = 25
+    llm_provider: str = ""       # "anthropic"|"openai"|"deepseek" (empty = anthropic)
+    llm_api_key_env: str = ""    # env var name for API key (empty = CLAUDE_API_KEY)
+    llm_model: str = ""          # model name (empty = claude_model)
+    llm_max_tokens: int = 0      # 0 = use claude_max_tokens
+    llm_api_url: str = ""        # custom API URL override
+
+    def get_llm_client(self):
+        """Create an LLM client from config, with backward compatibility.
+
+        When no ``[ring1.llm]`` section is configured (llm_provider is empty),
+        falls back to the Anthropic client using ``claude_*`` fields.
+        """
+        from ring1.llm_base import LLMError, create_llm_client
+
+        provider = self.llm_provider or "anthropic"
+
+        if provider == "anthropic":
+            api_key = self.claude_api_key
+            model = self.llm_model or self.claude_model
+            max_tokens = self.llm_max_tokens or self.claude_max_tokens
+        else:
+            env_var = self.llm_api_key_env
+            if not env_var:
+                raise LLMError(
+                    f"llm_api_key_env must be set for provider {provider!r}"
+                )
+            api_key = os.environ.get(env_var, "")
+            model = self.llm_model
+            max_tokens = self.llm_max_tokens or self.claude_max_tokens
+
+        return create_llm_client(
+            provider=provider,
+            api_key=api_key,
+            model=model,
+            max_tokens=max_tokens,
+            api_url=self.llm_api_url or None,
+        )
 
 
 def _load_dotenv(project_root: pathlib.Path) -> None:
@@ -65,6 +102,7 @@ def load_ring1_config(project_root: pathlib.Path) -> Ring1Config:
     tg = r1.get("telegram", {})
     autonomy = r1.get("autonomy", {})
     tools = r1.get("tools", {})
+    llm = r1.get("llm", {})
 
     return Ring1Config(
         claude_api_key=os.environ.get("CLAUDE_API_KEY", ""),
@@ -80,4 +118,9 @@ def load_ring1_config(project_root: pathlib.Path) -> Ring1Config:
         workspace_path=tools.get("workspace_path", "."),
         shell_timeout=tools.get("shell_timeout", 30),
         max_tool_rounds=tools.get("max_tool_rounds", 25),
+        llm_provider=llm.get("provider", ""),
+        llm_api_key_env=llm.get("api_key_env", ""),
+        llm_model=llm.get("model", ""),
+        llm_max_tokens=llm.get("max_tokens", 0),
+        llm_api_url=llm.get("api_url", ""),
     )

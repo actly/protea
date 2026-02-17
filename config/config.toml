@@ -36,6 +36,13 @@ enabled = false
 host = "127.0.0.1"
 port = 8888
 
+# [ring1.llm]
+# provider = "openai"         # anthropic | openai | deepseek
+# api_key_env = "OPENAI_API_KEY"
+# model = "gpt-4o"
+# max_tokens = 4096
+# api_url = ""                # custom URL override (optional)
+
 [ring1.telegram]
 enabled = true
 

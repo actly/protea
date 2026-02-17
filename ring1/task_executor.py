@@ -19,7 +19,7 @@ import queue
 import threading
 import time
 
-from ring1.llm_client import ClaudeClient, LLMError
+from ring1.llm_base import LLMClient, LLMError
 from ring1.tool_registry import ToolRegistry
 
 log = logging.getLogger("protea.task_executor")
@@ -190,7 +190,7 @@ class TaskExecutor:
     def __init__(
         self,
         state,
-        client: ClaudeClient,
+        client: LLMClient,
         ring2_path: pathlib.Path,
         reply_fn,
         registry: ToolRegistry | None = None,
@@ -563,14 +563,11 @@ def create_executor(
     registry_client=None,
 ) -> TaskExecutor | None:
     """Create a TaskExecutor from Ring1Config, or None if no API key."""
-    if not config.claude_api_key:
-        log.warning("Task executor: no CLAUDE_API_KEY — disabled")
+    try:
+        client = config.get_llm_client()
+    except LLMError as exc:
+        log.warning("Task executor: LLM client init failed — %s", exc)
         return None
-    client = ClaudeClient(
-        api_key=config.claude_api_key,
-        model=config.claude_model,
-        max_tokens=config.claude_max_tokens,
-    )
 
     # Build tool registry with subagent support
     from ring1.subagent import SubagentManager

@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import NamedTuple
 
-from ring1.llm_client import ClaudeClient, LLMError
+from ring1.llm_base import LLMClient, LLMError
 from ring1.prompts import build_crystallize_prompt, parse_crystallize_response
 
 log = logging.getLogger("protea.crystallizer")
@@ -27,15 +27,11 @@ class Crystallizer:
     def __init__(self, config, skill_store) -> None:
         self.config = config
         self.skill_store = skill_store
-        self._client: ClaudeClient | None = None
+        self._client: LLMClient | None = None
 
-    def _get_client(self) -> ClaudeClient:
+    def _get_client(self) -> LLMClient:
         if self._client is None:
-            self._client = ClaudeClient(
-                api_key=self.config.claude_api_key,
-                model=self.config.claude_model,
-                max_tokens=self.config.claude_max_tokens,
-            )
+            self._client = self.config.get_llm_client()
         return self._client
 
     # ------------------------------------------------------------------

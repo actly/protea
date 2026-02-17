@@ -666,8 +666,9 @@ class TestP1IdleDetection:
 
 class TestCreateExecutor:
     def test_no_api_key_returns_none(self):
+        from ring1.llm_base import LLMError
         cfg = MagicMock()
-        cfg.claude_api_key = ""
+        cfg.get_llm_client.side_effect = LLMError("API key is not set")
         state = _make_state()
         result = create_executor(cfg, state, pathlib.Path("/tmp"), MagicMock())
         assert result is None
