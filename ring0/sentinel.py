@@ -17,7 +17,7 @@ import time
 import tomllib
 
 from ring0.commit_watcher import CommitWatcher
-from ring0.fitness import FitnessTracker
+from ring0.fitness import FitnessTracker, evaluate_output
 from ring0.git_manager import GitManager
 from ring0.heartbeat import HeartbeatMonitor
 from ring0.memory import MemoryStore
@@ -456,18 +456,28 @@ def run(project_root: pathlib.Path) -> None:
                 )
                 _stop_ring2(proc)
 
+                # Read output and score.
+                output = _read_ring2_output(proc, max_lines=200)
+                output_lines = output.splitlines() if output else []
+                score, detail = evaluate_output(
+                    output_lines, survived=True,
+                    elapsed=elapsed, max_runtime=params.max_runtime_sec,
+                )
+
                 # Record success.
                 commit_hash = last_good_hash or "unknown"
                 fitness.record(
                     generation=generation,
                     commit_hash=commit_hash,
-                    score=1.0,
+                    score=score,
                     runtime_sec=elapsed,
                     survived=True,
+                    detail=detail,
                 )
+                log.info("Fitness score gen-%d: %.4f  detail=%s", generation, score, detail)
 
                 with state.lock:
-                    state.last_score = 1.0
+                    state.last_score = score
                     state.last_survived = True
 
                 # Snapshot the surviving code.
@@ -475,9 +485,6 @@ def run(project_root: pathlib.Path) -> None:
                     last_good_hash = git.snapshot(f"gen-{generation} survived")
                 except subprocess.CalledProcessError:
                     pass
-
-                # Record observation in memory (with output).
-                output = _read_ring2_output(proc, max_lines=50)
                 source = (ring2_path / "main.py").read_text()
                 if memory_store:
                     memory_store.add(
@@ -536,7 +543,7 @@ def run(project_root: pathlib.Path) -> None:
                 # Notify.
                 if notifier:
                     notifier.notify_generation_complete(
-                        generation, 1.0, True, last_good_hash or "unknown",
+                        generation, score, True, last_good_hash or "unknown",
                     )
 
                 # Next generation.
@@ -554,13 +561,18 @@ def run(project_root: pathlib.Path) -> None:
 
             # Ring 2 is dead — failure path.
             log.warning("Ring 2 lost heartbeat after %.1fs (gen-%d)", elapsed, generation)
-            output = _read_ring2_output(proc)
+            output = _read_ring2_output(proc, max_lines=200)
             _stop_ring2(proc)
 
             failure_reason = _classify_failure(proc, output)
             log.warning("Failure reason: %s", failure_reason)
 
-            score = min(elapsed / params.max_runtime_sec, 0.99) if params.max_runtime_sec > 0 else 0.0
+            output_lines = output.splitlines() if output else []
+            score, detail = evaluate_output(
+                output_lines, survived=False,
+                elapsed=elapsed, max_runtime=params.max_runtime_sec,
+            )
+            log.info("Fitness score gen-%d: %.4f  detail=%s", generation, score, detail)
             commit_hash = last_good_hash or "unknown"
             fitness.record(
                 generation=generation,
@@ -568,6 +580,7 @@ def run(project_root: pathlib.Path) -> None:
                 score=score,
                 runtime_sec=elapsed,
                 survived=False,
+                detail=detail,
             )
 
             with state.lock:
