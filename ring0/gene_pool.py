@@ -8,6 +8,7 @@ Pure stdlib — no external dependencies.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import logging
 import pathlib
@@ -147,37 +148,118 @@ class GenePool:
     def extract_summary(source_code: str) -> str:
         """Extract compact gene summary from Ring 2 source code.
 
-        - Parse def/class signatures with regex (not AST, to handle broken code)
+        Uses AST parsing for precision (class methods, proper docstrings),
+        with regex fallback for broken code that won't parse.
         - Skip heartbeat boilerplate (heartbeat_loop, write_heartbeat, main)
         - Include first-line docstrings
         - Cap at 500 chars
         """
-        lines: list[str] = []
+        try:
+            summary = _extract_summary_ast(source_code)
+        except Exception:
+            summary = _extract_summary_regex(source_code)
 
-        # Match class and def definitions.
-        for match in re.finditer(
-            r'^(class\s+(\w+)[^\n]*|def\s+(\w+)[^\n]*)', source_code, re.MULTILINE
-        ):
-            full_line = match.group(0)
-            name = match.group(2) or match.group(3)
-
-            # Skip heartbeat boilerplate.
-            if name and name.lower() in _SKIP_NAMES:
-                continue
-
-            lines.append(full_line)
-
-            # Try to grab first-line docstring right after the def/class.
-            end_pos = match.end()
-            rest = source_code[end_pos:]
-            doc_match = re.match(r'\s*\n\s*("""([^"]*?)"""|\'\'\'([^\']*?)\'\'\')', rest)
-            if doc_match:
-                docstring = (doc_match.group(2) or doc_match.group(3) or "").strip()
-                first_line = docstring.split("\n")[0].strip()
-                if first_line:
-                    lines.append(f'    """{first_line}"""')
-
-        summary = "\n".join(lines)
         if len(summary) > 500:
             summary = summary[:497] + "..."
         return summary
+
+
+def _extract_summary_ast(source_code: str) -> str:
+    """AST-based extraction — precise, handles methods inside classes."""
+    tree = ast.parse(source_code)
+    lines: list[str] = []
+
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ClassDef):
+            if node.name.lower() in _SKIP_NAMES:
+                continue
+            # Class signature.
+            bases = [_ast_name(b) for b in node.bases]
+            base_str = f"({', '.join(bases)})" if bases else ""
+            lines.append(f"class {node.name}{base_str}:")
+            # Class docstring.
+            doc = ast.get_docstring(node)
+            if doc:
+                first_line = doc.split("\n")[0].strip()
+                if first_line:
+                    lines.append(f'    """{first_line}"""')
+            # Methods (skip boilerplate, skip __init__).
+            for child in node.body:
+                if isinstance(child, ast.FunctionDef):
+                    if child.name.lower() in _SKIP_NAMES or child.name == "__init__":
+                        continue
+                    args = _format_args(child.args)
+                    lines.append(f"    def {child.name}({args}): ...")
+                    mdoc = ast.get_docstring(child)
+                    if mdoc:
+                        mfirst = mdoc.split("\n")[0].strip()
+                        if mfirst:
+                            lines.append(f'        """{mfirst}"""')
+
+        elif isinstance(node, ast.FunctionDef):
+            if node.name.lower() in _SKIP_NAMES:
+                continue
+            args = _format_args(node.args)
+            lines.append(f"def {node.name}({args}):")
+            doc = ast.get_docstring(node)
+            if doc:
+                first_line = doc.split("\n")[0].strip()
+                if first_line:
+                    lines.append(f'    """{first_line}"""')
+
+    return "\n".join(lines)
+
+
+def _ast_name(node) -> str:
+    """Get a readable name from an AST node (base class, etc.)."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return f"{_ast_name(node.value)}.{node.attr}"
+    return "?"
+
+
+def _format_args(args: ast.arguments) -> str:
+    """Format function arguments compactly: 'self, x, y=0'."""
+    parts: list[str] = []
+    defaults_offset = len(args.args) - len(args.defaults)
+    for i, arg in enumerate(args.args):
+        name = arg.arg
+        default_idx = i - defaults_offset
+        if default_idx >= 0:
+            parts.append(f"{name}=...")
+        else:
+            parts.append(name)
+    if args.vararg:
+        parts.append(f"*{args.vararg.arg}")
+    if args.kwarg:
+        parts.append(f"**{args.kwarg.arg}")
+    return ", ".join(parts)
+
+
+def _extract_summary_regex(source_code: str) -> str:
+    """Regex fallback — for code that fails AST parsing."""
+    lines: list[str] = []
+
+    for match in re.finditer(
+        r'^(class\s+(\w+)[^\n]*|def\s+(\w+)[^\n]*)', source_code, re.MULTILINE
+    ):
+        full_line = match.group(0)
+        name = match.group(2) or match.group(3)
+
+        if name and name.lower() in _SKIP_NAMES:
+            continue
+
+        lines.append(full_line)
+
+        # Try to grab first-line docstring right after the def/class.
+        end_pos = match.end()
+        rest = source_code[end_pos:]
+        doc_match = re.match(r'\s*\n\s*("""([^"]*?)"""|\'\'\'([^\']*?)\'\'\')', rest)
+        if doc_match:
+            docstring = (doc_match.group(2) or doc_match.group(3) or "").strip()
+            first_line = docstring.split("\n")[0].strip()
+            if first_line:
+                lines.append(f'    """{first_line}"""')
+
+    return "\n".join(lines)

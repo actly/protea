@@ -87,6 +87,12 @@ class TestExtractSummary:
         summary = GenePool.extract_summary(SAMPLE_SOURCE)
         assert "def compute_fibonacci" in summary
 
+    def test_extracts_method_signatures(self):
+        summary = GenePool.extract_summary(SAMPLE_SOURCE)
+        # AST can extract methods inside classes.
+        assert "def analyze" in summary
+        assert "def scan" in summary
+
     def test_extracts_docstrings(self):
         summary = GenePool.extract_summary(SAMPLE_SOURCE)
         assert "Real-time anomaly detection" in summary
@@ -118,6 +124,27 @@ class TestExtractSummary:
         summary = GenePool.extract_summary(TRIVIAL_SOURCE)
         # Should be empty — only heartbeat boilerplate.
         assert summary.strip() == ""
+
+    def test_regex_fallback_on_broken_code(self):
+        """Code with syntax errors falls back to regex extraction."""
+        broken = (
+            "class GoodClass:\n"
+            '    """A useful class."""\n'
+            "    pass\n\n"
+            "def broken_syntax(\n"  # unclosed paren — SyntaxError
+        )
+        summary = GenePool.extract_summary(broken)
+        assert "GoodClass" in summary
+        assert "A useful class" in summary
+
+    def test_extracts_method_docstrings(self):
+        summary = GenePool.extract_summary(SAMPLE_SOURCE)
+        assert "Detect anomalies" in summary
+        assert "Scan a package" in summary
+
+    def test_skips_init_methods(self):
+        summary = GenePool.extract_summary(SAMPLE_SOURCE)
+        assert "__init__" not in summary
 
 
 class TestGenePoolAdd:
