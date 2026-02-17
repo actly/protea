@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 import threading
@@ -384,6 +385,14 @@ def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=Non
 
 def run(project_root: pathlib.Path) -> None:
     """Sentinel main loop — run until interrupted."""
+    # Convert SIGTERM into KeyboardInterrupt so the finally block runs,
+    # ensuring Ring 2 subprocess, skill runners, and the Telegram bot
+    # are stopped cleanly.
+    def _sigterm_handler(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     cfg = _load_config(project_root)
     r0 = cfg["ring0"]
 
