@@ -166,7 +166,60 @@ def _should_evolve(state, cooldown_sec: int, fitness=None, plateau_window: int =
     return True, plateaued
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary=""):
+def _try_install_capability(proposal, skill_store, venv_manager, allowed_packages):
+    """Validate and install a capability skill proposed by evolution.
+
+    Returns True if installed successfully.
+    """
+    from ring1.skill_validator import validate_skill, validate_dependencies
+
+    name = proposal.get("name", "")
+    source_code = proposal.get("source_code", "")
+    dependencies = proposal.get("dependencies", [])
+
+    if not name or not source_code:
+        log.warning("Capability proposal missing name or source_code")
+        return False
+
+    # 1. Validate source code.
+    code_result = validate_skill(source_code)
+    if not code_result.safe:
+        log.warning("Capability '%s' rejected: unsafe code — %s", name, code_result.errors)
+        return False
+
+    # 2. Validate dependencies.
+    dep_result = validate_dependencies(dependencies, allowed_packages)
+    if not dep_result.safe:
+        log.warning("Capability '%s' rejected: bad deps — %s", name, dep_result.errors)
+        return False
+
+    # 3. Install to skill store.
+    try:
+        skill_store.add(
+            name=name,
+            description=proposal.get("description", ""),
+            prompt_template=proposal.get("description", ""),
+            tags=proposal.get("tags", []),
+            source_code=source_code,
+            source="evolved",
+            dependencies=dependencies,
+        )
+    except Exception as exc:
+        log.warning("Capability '%s' install failed: %s", name, exc)
+        return False
+
+    # 4. Pre-create venv (best-effort).
+    if venv_manager and dependencies:
+        try:
+            venv_manager.ensure_env(name, dependencies)
+            log.info("Capability '%s' installed with deps: %s", name, dependencies)
+        except Exception as exc:
+            log.warning("Capability '%s' venv setup failed (will retry on first run): %s", name, exc)
+
+    return True
+
+
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", venv_manager=None, allowed_packages=None):
     """Best-effort evolution.  Returns True if new code was written."""
     try:
         from ring1.config import load_ring1_config
@@ -262,6 +315,17 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             except Exception:
                 pass
 
+        # Collect permanent capabilities for the evolution prompt.
+        permanent_caps = []
+        if skill_store:
+            try:
+                permanent_caps = skill_store.get_permanent()
+            except Exception:
+                pass
+
+        # Build allowed packages list.
+        allowed_pkg_set = allowed_packages
+
         evolver = Evolver(r1_config, fitness, memory_store=memory_store)
         result = evolver.evolve(
             ring2_path=ring2_path,
@@ -278,6 +342,8 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             gene_pool=genes,
             evolution_intent=evolution_intent,
             user_profile_summary=user_profile_summary,
+            permanent_capabilities=permanent_caps or None,
+            allowed_packages=list(allowed_pkg_set) if allowed_pkg_set else None,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
@@ -303,6 +369,23 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
                                 )
                     except Exception:
                         pass
+
+                # Handle capability proposal from evolution.
+                proposal = result.metadata.get("capability_proposal")
+                if proposal and skill_store:
+                    installed = _try_install_capability(
+                        proposal, skill_store, venv_manager, allowed_pkg_set,
+                    )
+                    if installed and gene_pool:
+                        try:
+                            gene_pool.add(
+                                generation=generation,
+                                score=0.85,
+                                source_code=proposal["source_code"],
+                            )
+                        except Exception:
+                            pass
+
             return True
         else:
             log.warning("Evolution failed: %s", result.reason)
@@ -524,6 +607,24 @@ def run(project_root: pathlib.Path) -> None:
     embedding_provider = _create_embedding_provider(cfg)
     memory_curator = _create_memory_curator(project_root)
 
+    # Capability skill sandbox — venv manager + allowed packages.
+    venv_manager = None
+    allowed_packages = None
+    sandbox_cfg = cfg.get("ring1", {}).get("skill_sandbox", {})
+    if sandbox_cfg.get("enabled", True):
+        try:
+            from ring1.skill_sandbox import VenvManager
+            from ring1.skill_validator import _DEFAULT_ALLOWED_PACKAGES
+            base_dir = project_root / sandbox_cfg.get("base_dir", "data/skill_envs")
+            max_envs = sandbox_cfg.get("max_envs", 10)
+            venv_manager = VenvManager(base_dir, max_envs)
+            allowed_packages = _DEFAULT_ALLOWED_PACKAGES | frozenset(
+                sandbox_cfg.get("extra_allowed_packages", [])
+            )
+            log.info("VenvManager created (base_dir=%s, max_envs=%d)", base_dir, max_envs)
+        except Exception as exc:
+            log.debug("VenvManager not available: %s", exc)
+
     hb = HeartbeatMonitor(heartbeat_path, timeout_sec=timeout)
     notifier = _create_notifier(project_root)
 
@@ -531,7 +632,7 @@ def run(project_root: pathlib.Path) -> None:
     from ring1.telegram_bot import SentinelState
     state = SentinelState()
     state.notifier = notifier  # bot uses this for auto-detect propagation
-    skill_runner = _best_effort("SkillRunner", lambda: __import__("ring1.skill_runner", fromlist=["SkillRunner"]).SkillRunner())
+    skill_runner = _best_effort("SkillRunner", lambda: __import__("ring1.skill_runner", fromlist=["SkillRunner"]).SkillRunner(venv_manager=venv_manager))
     state.memory_store = memory_store
     state.skill_store = skill_store
     state.skill_runner = skill_runner
@@ -781,6 +882,8 @@ def run(project_root: pathlib.Path) -> None:
                         is_plateaued=plateaued,
                         gene_pool=gene_pool,
                         user_profile_summary=profile_summary,
+                        venv_manager=venv_manager,
+                        allowed_packages=allowed_packages,
                     )
                 if evolved:
                     state.last_evolution_time = time.time()
@@ -868,14 +971,33 @@ def run(project_root: pathlib.Path) -> None:
                 log.info("Rolling back to %s", last_good_hash[:12])
                 git.rollback(last_good_hash)
 
-            # Record crash log and observation in memory.
+            # Record crash log and observation in memory (with deduplication).
             if memory_store:
-                memory_store.add(
-                    generation, "crash_log",
+                crash_content = (
                     f"Gen {generation} died after {elapsed:.0f}s.\n"
                     f"Reason: {failure_reason}\n\n"
-                    f"--- Last output ---\n{output[-2000:] if output else '(no output)'}",
+                    f"--- Last output ---\n{output[-2000:] if output else '(no output)'}"
                 )
+                
+                # Check for duplicate crashes using fuzzy matching on failure reason
+                should_store = True
+                try:
+                    # Use fuzzy deduplication for crash logs (90% threshold for stricter matching)
+                    is_duplicate = memory_store.is_duplicate_content(
+                        "crash_log",
+                        crash_content,
+                        lookback=5,
+                        similarity_threshold=0.90
+                    )
+                    
+                    if is_duplicate:
+                        should_store = False
+                        log.debug(f"Skipping duplicate crash reason: {failure_reason}")
+                except Exception:
+                    pass  # If query fails, store anyway
+                
+                if should_store:
+                    memory_store.add(generation, "crash_log", crash_content)
 
             # Evolve from the good base (best-effort) — skip if busy or cooling down.
             # Failures always trigger evolution (no plateau skip) to fix the issue.
@@ -919,6 +1041,8 @@ def run(project_root: pathlib.Path) -> None:
                     is_plateaued=False,  # failure path — focus on fixing, not novelty
                     gene_pool=gene_pool,
                     user_profile_summary=profile_summary,
+                    venv_manager=venv_manager,
+                    allowed_packages=allowed_packages,
                 )
             if evolved:
                 state.last_evolution_time = time.time()

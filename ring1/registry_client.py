@@ -91,9 +91,10 @@ class RegistryClient:
         parameters: dict | None = None,
         tags: list[str] | None = None,
         source_code: str = "",
+        dependencies: list[str] | None = None,
     ) -> dict | None:
         """Publish a skill to the registry."""
-        return self._request("POST", "/api/skills", body={
+        body: dict = {
             "node_id": self.node_id,
             "name": name,
             "description": description,
@@ -101,7 +102,10 @@ class RegistryClient:
             "parameters": parameters or {},
             "tags": tags or [],
             "source_code": source_code,
-        })
+        }
+        if dependencies:
+            body["dependencies"] = dependencies
+        return self._request("POST", "/api/skills", body=body)
 
     def search(
         self,

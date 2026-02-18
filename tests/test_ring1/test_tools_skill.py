@@ -65,7 +65,7 @@ class TestRunSkillTool:
         tool = make_run_skill_tool(store, runner)
         result = tool.execute({"skill_name": "my_skill"})
 
-        runner.run.assert_called_once_with("my_skill", "print('hello')")
+        runner.run.assert_called_once_with("my_skill", "print('hello')", dependencies=None)
         store.update_usage.assert_called_once_with("my_skill")
         mock_sleep.assert_called_once_with(3)
         assert "PID 12345" in result

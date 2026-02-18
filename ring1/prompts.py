@@ -53,6 +53,30 @@ IMPORTANT: Novelty is scored by comparing output tokens against recent generatio
 Repeating the same program pattern will score LOW on novelty. Each generation should
 produce genuinely different output to maximise its score.
 
+## Capability Evolution (optional)
+If the user's recent tasks require capabilities that pure stdlib cannot provide
+(e.g., browser automation, email management, calendar access), you may propose
+a CAPABILITY SKILL alongside your Ring 2 code mutation.
+
+Propose a capability ONLY when:
+1. Recent user tasks clearly need it (evidence in task history)
+2. No existing skill already covers it
+3. The required packages are well-known and safe
+
+Format: After the Ring 2 code block, add:
+
+```capability
+{
+  "name": "skill_name_snake_case",
+  "description": "One-sentence description of what this skill does",
+  "dependencies": ["package1", "package2"],
+  "tags": ["tag1", "tag2"],
+  "source_code": "full Python source code of the skill"
+}
+```
+
+If no capability is needed, omit this section entirely.
+
 ## Response Format
 Start with a SHORT reflection (1-2 sentences max), then the complete code.
 Keep the reflection brief — the code is what matters.
@@ -83,6 +107,9 @@ def build_evolution_prompt(
     gene_pool: list[dict] | None = None,
     evolution_intent: dict | None = None,
     user_profile_summary: str = "",
+    tool_names: list[str] | None = None,
+    permanent_capabilities: list[dict] | None = None,
+    allowed_packages: list[str] | None = None,
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call."""
     parts: list[str] = []
@@ -168,6 +195,33 @@ def build_evolution_prompt(
         parts.append("## User Profile")
         parts.append(user_profile_summary)
         parts.append("Align evolution with the user's primary interests and active domains.")
+        parts.append("")
+
+    # Available tools/capabilities (so LLM knows what already exists)
+    if tool_names:
+        parts.append("## Available Tools")
+        for name in tool_names:
+            parts.append(f"- {name}")
+        parts.append("")
+
+    # Evolved capabilities (permanent skills — highest priority DNA)
+    if permanent_capabilities:
+        parts.append("## Evolved Capabilities (permanent DNA)")
+        parts.append("These capabilities were evolved and proven useful. "
+                      "Build upon them, do NOT duplicate them.")
+        for cap in permanent_capabilities:
+            name = cap.get("name", "?")
+            desc = cap.get("description", "")
+            deps = cap.get("dependencies", [])
+            usage = cap.get("usage_count", 0)
+            parts.append(f"- {name}: {desc} (deps: {', '.join(deps)}, used {usage}x)")
+        parts.append("")
+
+    # Allowed packages for capability proposals
+    if allowed_packages:
+        parts.append("## Allowed Packages for Capability Skills")
+        parts.append(f"You may use: {', '.join(sorted(allowed_packages))}")
+        parts.append("Do NOT propose packages outside this list.")
         parts.append("")
 
     # Existing skills — avoid duplication + highlight unused ones
@@ -299,6 +353,29 @@ def extract_reflection(response: str) -> str | None:
         if text:
             return text
     return None
+
+
+def extract_capability_proposal(response: str) -> dict | None:
+    """Extract optional capability proposal from evolution LLM response.
+
+    Looks for ```capability ... ``` block containing JSON.
+    Returns parsed dict or None if no proposal.
+    """
+    pattern = r"```capability\s*\n(.*?)```"
+    match = re.search(pattern, response, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(1).strip())
+    except (json.JSONDecodeError, ValueError):
+        return None
+    # Validate required fields.
+    required = {"name", "description", "dependencies", "source_code"}
+    if not required.issubset(data.keys()):
+        return None
+    if not isinstance(data["dependencies"], list):
+        return None
+    return data
 
 
 # ---------------------------------------------------------------------------

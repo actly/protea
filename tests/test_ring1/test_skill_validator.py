@@ -1,6 +1,6 @@
 """Tests for ring1.skill_validator — security validation for skills."""
 
-from ring1.skill_validator import validate_skill, ValidationResult
+from ring1.skill_validator import validate_skill, validate_dependencies, ValidationResult, _DEFAULT_ALLOWED_PACKAGES
 
 
 class TestValidateSkill:
@@ -115,3 +115,48 @@ HTTPServer(("127.0.0.1", 8080), Handler).serve_forever()
         result.safe = False
         result.errors = ["test"]
         assert "BLOCKED" in repr(result)
+
+
+class TestValidateDependencies:
+    """validate_dependencies() should check packages against allowlist."""
+
+    def test_allowed_packages_pass(self):
+        result = validate_dependencies(["requests", "pandas"])
+        assert result.safe is True
+        assert result.errors == []
+
+    def test_disallowed_package_rejected(self):
+        result = validate_dependencies(["requests", "malicious_pkg"])
+        assert result.safe is False
+        assert any("malicious_pkg" in e for e in result.errors)
+
+    def test_version_specifier_stripped(self):
+        result = validate_dependencies(["requests>=2.0", "pandas==1.5.3"])
+        assert result.safe is True
+
+    def test_tilde_version_stripped(self):
+        result = validate_dependencies(["requests~=2.28"])
+        assert result.safe is True
+
+    def test_empty_list_is_safe(self):
+        result = validate_dependencies([])
+        assert result.safe is True
+        assert result.errors == []
+
+    def test_custom_allowlist(self):
+        custom = frozenset({"my_pkg"})
+        result = validate_dependencies(["my_pkg"], allowed=custom)
+        assert result.safe is True
+        # Default packages should be rejected with custom list.
+        result2 = validate_dependencies(["requests"], allowed=custom)
+        assert result2.safe is False
+
+    def test_case_insensitive(self):
+        result = validate_dependencies(["Requests", "PANDAS"])
+        assert result.safe is True
+
+    def test_default_allowlist_has_expected_packages(self):
+        assert "requests" in _DEFAULT_ALLOWED_PACKAGES
+        assert "playwright" in _DEFAULT_ALLOWED_PACKAGES
+        assert "pandas" in _DEFAULT_ALLOWED_PACKAGES
+        assert "pillow" in _DEFAULT_ALLOWED_PACKAGES

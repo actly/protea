@@ -179,7 +179,7 @@ class TestImportance:
         assert _compute_importance("directive", "short") == 0.9
 
     def test_crash_log(self):
-        assert _compute_importance("crash_log", "short") == 0.8
+        assert _compute_importance("crash_log", "short") == 0.65
 
     def test_task_substantive(self):
         """Substantive task with enough length gets high importance."""

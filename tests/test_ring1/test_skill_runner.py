@@ -230,3 +230,53 @@ class TestPatchSource:
         src = "print('hello world')\n"
         patched = SkillRunner._patch_source(src)
         assert patched == src
+
+
+# ---------------------------------------------------------------------------
+# TestVenvIntegration
+# ---------------------------------------------------------------------------
+
+
+class TestVenvIntegration:
+    """SkillRunner should use venv Python when dependencies are provided."""
+
+    def test_no_deps_uses_sys_executable(self):
+        """Without dependencies, sys.executable should be used."""
+        sr = SkillRunner()
+        try:
+            pid, msg = sr.run("nodep", _SIMPLE_SCRIPT)
+            assert pid > 0
+        finally:
+            sr.stop()
+
+    def test_deps_without_venv_manager_uses_sys_executable(self):
+        """If no venv_manager, deps are ignored and sys.executable is used."""
+        sr = SkillRunner()
+        try:
+            pid, msg = sr.run("nodep", _SIMPLE_SCRIPT, dependencies=["requests"])
+            assert pid > 0
+        finally:
+            sr.stop()
+
+    def test_deps_with_venv_manager_calls_ensure_env(self):
+        """With a venv_manager, ensure_env is called for dependency skills."""
+        from unittest.mock import MagicMock
+        mock_venv = MagicMock()
+        mock_venv.ensure_env.return_value = sys.executable  # Use real Python for the test
+        sr = SkillRunner(venv_manager=mock_venv)
+        try:
+            pid, msg = sr.run("dep_skill", _SIMPLE_SCRIPT, dependencies=["requests"])
+            mock_venv.ensure_env.assert_called_once_with("dep_skill", ["requests"])
+            assert pid > 0
+        finally:
+            sr.stop()
+
+    def test_venv_setup_failure_returns_error(self):
+        """If ensure_env raises, run() should return an error message."""
+        from unittest.mock import MagicMock
+        mock_venv = MagicMock()
+        mock_venv.ensure_env.side_effect = RuntimeError("pip failed")
+        sr = SkillRunner(venv_manager=mock_venv)
+        pid, msg = sr.run("fail_skill", _SIMPLE_SCRIPT, dependencies=["bad_pkg"])
+        assert pid == 0
+        assert "Failed to setup environment" in msg

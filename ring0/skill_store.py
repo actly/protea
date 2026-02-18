@@ -43,6 +43,10 @@ class SkillStore(SQLiteStore):
             con.execute("ALTER TABLE skills ADD COLUMN last_used_at TEXT DEFAULT NULL")
         if "published" not in cols:
             con.execute("ALTER TABLE skills ADD COLUMN published BOOLEAN DEFAULT 0")
+        if "dependencies" not in cols:
+            con.execute("ALTER TABLE skills ADD COLUMN dependencies TEXT DEFAULT '[]'")
+        if "permanent" not in cols:
+            con.execute("ALTER TABLE skills ADD COLUMN permanent BOOLEAN DEFAULT 0")
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict:
@@ -53,6 +57,11 @@ class SkillStore(SQLiteStore):
                     d[key] = json.loads(d[key])
                 except (json.JSONDecodeError, TypeError):
                     d[key] = {} if key == "parameters" else []
+        if "dependencies" in d and isinstance(d["dependencies"], str):
+            try:
+                d["dependencies"] = json.loads(d["dependencies"])
+            except (json.JSONDecodeError, TypeError):
+                d["dependencies"] = []
         d["active"] = bool(d.get("active", 1))
         return d
 
@@ -65,16 +74,18 @@ class SkillStore(SQLiteStore):
         tags: list[str] | None = None,
         source: str = "user",
         source_code: str = "",
+        dependencies: list[str] | None = None,
     ) -> int:
         """Insert a skill and return its rowid."""
         params_json = json.dumps(parameters or {})
         tags_json = json.dumps(tags or [])
+        deps_json = json.dumps(dependencies or [])
         with self._connect() as con:
             cur = con.execute(
                 "INSERT INTO skills "
-                "(name, description, prompt_template, parameters, tags, source, source_code) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (name, description, prompt_template, params_json, tags_json, source, source_code),
+                "(name, description, prompt_template, parameters, tags, source, source_code, dependencies) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, description, prompt_template, params_json, tags_json, source, source_code, deps_json),
             )
             return cur.lastrowid  # type: ignore[return-value]
 
@@ -99,11 +110,20 @@ class SkillStore(SQLiteStore):
             return [self._row_to_dict(r) for r in rows]
 
     def update_usage(self, name: str) -> None:
-        """Increment the usage count and update last_used_at for a skill."""
+        """Increment the usage count and update last_used_at for a skill.
+
+        Evolved capability skills are auto-promoted to permanent on first use.
+        """
         with self._connect() as con:
             con.execute(
                 "UPDATE skills SET usage_count = usage_count + 1, "
                 "last_used_at = CURRENT_TIMESTAMP WHERE name = ?",
+                (name,),
+            )
+            # Auto-promote evolved capabilities to permanent after first use.
+            con.execute(
+                "UPDATE skills SET permanent = 1 "
+                "WHERE name = ? AND source = 'evolved' AND permanent = 0",
                 (name,),
             )
 
@@ -172,6 +192,7 @@ class SkillStore(SQLiteStore):
         Returns the rowid.
         """
         name = skill_data["name"]
+        dependencies = skill_data.get("dependencies")
         existing = self.get_by_name(name)
         if existing:
             self.update(
@@ -186,6 +207,11 @@ class SkillStore(SQLiteStore):
                     "UPDATE skills SET source = 'hub', active = 1 WHERE name = ?",
                     (name,),
                 )
+                if dependencies is not None:
+                    con.execute(
+                        "UPDATE skills SET dependencies = ? WHERE name = ?",
+                        (json.dumps(dependencies), name),
+                    )
             return existing["id"]
         return self.add(
             name=name,
@@ -195,6 +221,7 @@ class SkillStore(SQLiteStore):
             tags=skill_data.get("tags"),
             source="hub",
             source_code=skill_data.get("source_code", ""),
+            dependencies=dependencies,
         )
 
     def get_unpublished(self, min_usage: int = 2) -> list[dict]:
@@ -234,12 +261,14 @@ class SkillStore(SQLiteStore):
         Hub skills that have *never* been used (usage_count == 0) are evicted
         after 7 days instead of *days* to save space.
         Locally crystallized skills (source != 'hub') are never evicted.
+        Permanent skills are never evicted regardless of source.
         Returns the number of skills removed.
         """
         with self._connect() as con:
             # Never-used hub skills: 7-day expiry.
             cur1 = con.execute(
                 "DELETE FROM skills WHERE source = 'hub' "
+                "AND permanent = 0 "
                 "AND usage_count = 0 AND ("
                 "  last_used_at IS NULL AND created_at < datetime('now', '-7 days')"
                 "  OR last_used_at < datetime('now', '-7 days')"
@@ -249,6 +278,7 @@ class SkillStore(SQLiteStore):
             # Used hub skills: normal expiry.
             cur2 = con.execute(
                 "DELETE FROM skills WHERE source = 'hub' "
+                "AND permanent = 0 "
                 "AND usage_count > 0 AND ("
                 "  last_used_at IS NULL AND created_at < datetime('now', ?)"
                 "  OR last_used_at < datetime('now', ?)"
@@ -256,4 +286,20 @@ class SkillStore(SQLiteStore):
                 (f"-{days} days", f"-{days} days"),
             )
             return count + cur2.rowcount
+
+    def mark_permanent(self, name: str) -> None:
+        """Mark a skill as permanent (will not be evicted)."""
+        with self._connect() as con:
+            con.execute(
+                "UPDATE skills SET permanent = 1 WHERE name = ?", (name,),
+            )
+
+    def get_permanent(self) -> list[dict]:
+        """Return all permanent capability skills."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM skills WHERE permanent = 1 AND active = 1 "
+                "ORDER BY usage_count DESC",
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
 

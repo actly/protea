@@ -14,7 +14,7 @@ class FakeRegistryClient:
         self._search_results: list[dict] = []
         self._download_map: dict[tuple[str, str], dict] = {}
 
-    def publish(self, name, description="", prompt_template="", parameters=None, tags=None, source_code=""):
+    def publish(self, name, description="", prompt_template="", parameters=None, tags=None, source_code="", dependencies=None):
         self.published.append({"name": name})
         return {"ok": True}
 

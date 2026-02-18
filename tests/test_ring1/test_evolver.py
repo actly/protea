@@ -473,3 +473,85 @@ class TestEvolver:
         mock_prompt.assert_called_once()
         call_kwargs = mock_prompt.call_args
         assert call_kwargs[1].get("gene_pool") is None
+
+    def test_capability_proposal_in_metadata(self, tmp_path):
+        """If LLM response contains a capability block, it should appear in metadata."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        capability_json = '{"name": "web_scraper", "description": "Scrape pages", "dependencies": ["requests"], "source_code": "print(1)", "tags": ["web"]}'
+        llm_response = (
+            f"## Reflection\nAdding capability.\n\n"
+            f"```python\n{VALID_SOURCE}```\n\n"
+            f"```capability\n{capability_json}\n```"
+        )
+        config = _make_config()
+        fitness = _make_fitness()
+
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        assert result.success is True
+        assert "capability_proposal" in result.metadata
+        assert result.metadata["capability_proposal"]["name"] == "web_scraper"
+        assert result.metadata["capability_proposal"]["dependencies"] == ["requests"]
+
+    def test_no_capability_proposal_not_in_metadata(self, tmp_path):
+        """Without capability block, metadata should not have capability_proposal."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = f"```python\n{VALID_SOURCE}```"
+        config = _make_config()
+        fitness = _make_fitness()
+
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        assert result.success is True
+        assert "capability_proposal" not in result.metadata
+
+    def test_permanent_capabilities_passed_to_prompt(self, tmp_path):
+        """permanent_capabilities should be forwarded to build_evolution_prompt."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = f"```python\n{VALID_SOURCE}```"
+        config = _make_config()
+        fitness = _make_fitness()
+        caps = [{"name": "test_cap", "description": "d", "dependencies": [], "usage_count": 1}]
+
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
+            mock_prompt.return_value = ("system", "user")
+            evolver = Evolver(config, fitness)
+            evolver.evolve(ring2, generation=1, params={}, survived=True,
+                           permanent_capabilities=caps)
+
+        call_kwargs = mock_prompt.call_args
+        assert call_kwargs[1].get("permanent_capabilities") == caps
+
+    def test_allowed_packages_passed_to_prompt(self, tmp_path):
+        """allowed_packages should be forwarded to build_evolution_prompt."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = f"```python\n{VALID_SOURCE}```"
+        config = _make_config()
+        fitness = _make_fitness()
+
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
+            mock_prompt.return_value = ("system", "user")
+            evolver = Evolver(config, fitness)
+            evolver.evolve(ring2, generation=1, params={}, survived=True,
+                           allowed_packages=["requests", "pandas"])
+
+        call_kwargs = mock_prompt.call_args
+        assert call_kwargs[1].get("allowed_packages") == ["requests", "pandas"]

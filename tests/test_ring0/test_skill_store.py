@@ -664,3 +664,185 @@ class TestSchemaMigrationPublished:
         assert skill["published"] == 0
         store.mark_published("old")
         assert store.get_by_name("old")["published"] == 1
+
+
+class TestDependencies:
+    """dependencies column should store and retrieve JSON lists."""
+
+    def test_add_with_dependencies(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl", dependencies=["requests", "pandas"])
+        skill = store.get_by_name("s1")
+        assert skill["dependencies"] == ["requests", "pandas"]
+
+    def test_default_empty_list(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl")
+        skill = store.get_by_name("s1")
+        assert skill["dependencies"] == []
+
+    def test_install_from_hub_with_dependencies(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        data = {
+            "name": "hub_cap",
+            "description": "Browser automation",
+            "prompt_template": "tmpl",
+            "source_code": "print('ok')",
+            "dependencies": ["playwright"],
+        }
+        store.install_from_hub(data)
+        skill = store.get_by_name("hub_cap")
+        assert skill["dependencies"] == ["playwright"]
+
+    def test_install_from_hub_updates_dependencies(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl", dependencies=["old_pkg"])
+        store.install_from_hub({
+            "name": "s1",
+            "description": "updated",
+            "prompt_template": "tmpl",
+            "dependencies": ["new_pkg"],
+        })
+        skill = store.get_by_name("s1")
+        assert skill["dependencies"] == ["new_pkg"]
+
+
+class TestPermanent:
+    """permanent column and related methods."""
+
+    def test_default_not_permanent(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl")
+        skill = store.get_by_name("s1")
+        assert skill["permanent"] == 0
+
+    def test_mark_permanent(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl")
+        store.mark_permanent("s1")
+        skill = store.get_by_name("s1")
+        assert skill["permanent"] == 1
+
+    def test_get_permanent(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("perm", "desc", "tmpl")
+        store.add("normal", "desc", "tmpl")
+        store.mark_permanent("perm")
+        permanent = store.get_permanent()
+        names = [s["name"] for s in permanent]
+        assert "perm" in names
+        assert "normal" not in names
+
+    def test_get_permanent_excludes_inactive(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("perm", "desc", "tmpl")
+        store.mark_permanent("perm")
+        store.deactivate("perm")
+        assert store.get_permanent() == []
+
+    def test_evict_stale_skips_permanent(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("perm_hub", "desc", "tmpl", source="hub")
+        store.mark_permanent("perm_hub")
+        # Backdate to trigger eviction
+        with store._connect() as con:
+            con.execute(
+                "UPDATE skills SET created_at = datetime('now', '-60 days') "
+                "WHERE name = 'perm_hub'"
+            )
+        evicted = store.evict_stale(days=30)
+        assert evicted == 0
+        assert store.get_by_name("perm_hub") is not None
+
+
+class TestAutoPromoteEvolved:
+    """update_usage() should auto-promote evolved skills to permanent."""
+
+    def test_evolved_skill_promoted_on_first_use(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("cap", "desc", "tmpl", source="evolved")
+        assert store.get_by_name("cap")["permanent"] == 0
+        store.update_usage("cap")
+        skill = store.get_by_name("cap")
+        assert skill["permanent"] == 1
+        assert skill["usage_count"] == 1
+
+    def test_non_evolved_skill_not_promoted(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("user_skill", "desc", "tmpl", source="user")
+        store.update_usage("user_skill")
+        assert store.get_by_name("user_skill")["permanent"] == 0
+
+    def test_already_permanent_stays_permanent(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("cap", "desc", "tmpl", source="evolved")
+        store.mark_permanent("cap")
+        store.update_usage("cap")
+        store.update_usage("cap")
+        assert store.get_by_name("cap")["permanent"] == 1
+        assert store.get_by_name("cap")["usage_count"] == 2
+
+    def test_promoted_skill_appears_in_get_permanent(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("cap", "desc", "tmpl", source="evolved")
+        assert store.get_permanent() == []
+        store.update_usage("cap")
+        permanent = store.get_permanent()
+        assert len(permanent) == 1
+        assert permanent[0]["name"] == "cap"
+
+    def test_promoted_skill_not_evicted(self, tmp_path):
+        """Evolved skill that was promoted should survive eviction."""
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("cap", "desc", "tmpl", source="evolved")
+        store.update_usage("cap")  # promotes to permanent
+        # Even if we change source to hub and backdate, permanent should protect it.
+        with store._connect() as con:
+            con.execute("UPDATE skills SET source = 'hub' WHERE name = 'cap'")
+            con.execute(
+                "UPDATE skills SET created_at = datetime('now', '-60 days'), "
+                "last_used_at = datetime('now', '-60 days') WHERE name = 'cap'"
+            )
+        evicted = store.evict_stale(days=30)
+        assert evicted == 0
+        assert store.get_by_name("cap") is not None
+
+
+class TestSchemaMigrationDependenciesPermanent:
+    """Opening an old database should add dependencies and permanent columns."""
+
+    def test_migrate_adds_new_columns(self, tmp_path):
+        db_path = tmp_path / "old.db"
+        con = sqlite3.connect(str(db_path))
+        con.execute(
+            "CREATE TABLE skills ("
+            "  id INTEGER PRIMARY KEY,"
+            "  name TEXT NOT NULL UNIQUE,"
+            "  description TEXT NOT NULL,"
+            "  prompt_template TEXT NOT NULL,"
+            "  parameters TEXT DEFAULT '{}',"
+            "  tags TEXT DEFAULT '[]',"
+            "  source TEXT NOT NULL DEFAULT 'user',"
+            "  source_code TEXT DEFAULT '',"
+            "  usage_count INTEGER DEFAULT 0,"
+            "  active BOOLEAN DEFAULT 1,"
+            "  created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+            "  last_used_at TEXT DEFAULT NULL,"
+            "  published BOOLEAN DEFAULT 0"
+            ")"
+        )
+        con.execute("INSERT INTO skills (name, description, prompt_template) VALUES ('old', 'desc', 'tmpl')")
+        con.commit()
+        con.close()
+
+        store = SkillStore(db_path)
+        skill = store.get_by_name("old")
+        assert skill is not None
+        assert skill["dependencies"] == []
+        assert skill["permanent"] == 0
+
+        # New features should work.
+        store.add("new", "desc", "tmpl", dependencies=["requests"])
+        assert store.get_by_name("new")["dependencies"] == ["requests"]
+        store.mark_permanent("new")
+        assert store.get_by_name("new")["permanent"] == 1

@@ -83,6 +83,49 @@ class ValidationResult:
         return "".join(parts)
 
 
+# Seed allowlist for capability skill dependencies.
+_DEFAULT_ALLOWED_PACKAGES = frozenset({
+    # Web/Browser
+    "requests", "httpx", "beautifulsoup4", "lxml", "playwright",
+    # Email
+    "imapclient",
+    # Data
+    "pandas", "openpyxl", "pdfplumber",
+    # Media
+    "pillow",
+    # Calendar
+    "icalendar", "caldav",
+    # Utilities
+    "python-dateutil", "pyyaml", "jinja2",
+})
+
+
+def validate_dependencies(
+    dependencies: list[str],
+    allowed: frozenset[str] | None = None,
+) -> ValidationResult:
+    """Check that all declared dependencies are on the allowlist.
+
+    Returns ValidationResult with safe=False if any package is not allowed.
+    """
+    result = ValidationResult()
+    if not dependencies:
+        return result
+
+    allowlist = allowed if allowed is not None else _DEFAULT_ALLOWED_PACKAGES
+
+    for dep in dependencies:
+        # Strip version specifiers: "requests>=2.0" → "requests"
+        pkg = dep.split("==")[0].split(">=")[0].split("<=")[0].split("!=")[0].split("~=")[0].split(">")[0].split("<")[0].strip().lower()
+        if not pkg:
+            continue
+        if pkg not in allowlist:
+            result.errors.append(f"Package '{pkg}' not in allowed list")
+            result.safe = False
+
+    return result
+
+
 def validate_skill(source_code: str) -> ValidationResult:
     """Validate skill source code for security risks.
 

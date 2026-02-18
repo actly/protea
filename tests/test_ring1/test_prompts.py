@@ -4,6 +4,7 @@ from ring1.prompts import (
     build_crystallize_prompt,
     build_evolution_prompt,
     build_memory_curation_prompt,
+    extract_capability_proposal,
     extract_python_code,
     extract_reflection,
     parse_crystallize_response,
@@ -866,3 +867,154 @@ class TestMemoryCurationPrompt:
         _, user = build_memory_curation_prompt(candidates)
         assert "..." in user
         assert len(user) < 500
+
+
+class TestCapabilityEvolutionInPrompt:
+    """Verify tool_names, permanent_capabilities, and allowed_packages in prompt."""
+
+    def test_tool_names_included(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            tool_names=["run_skill", "web_fetch", "shell"],
+        )
+        assert "## Available Tools" in user
+        assert "- run_skill" in user
+        assert "- web_fetch" in user
+
+    def test_no_tool_names_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            tool_names=None,
+        )
+        assert "Available Tools" not in user
+
+    def test_permanent_capabilities_included(self):
+        caps = [
+            {"name": "browser_auto", "description": "Browser automation", "dependencies": ["playwright"], "usage_count": 5},
+            {"name": "email_check", "description": "Check email", "dependencies": ["imapclient"], "usage_count": 2},
+        ]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            permanent_capabilities=caps,
+        )
+        assert "## Evolved Capabilities (permanent DNA)" in user
+        assert "browser_auto" in user
+        assert "playwright" in user
+        assert "used 5x" in user
+        assert "do NOT duplicate" in user
+
+    def test_no_permanent_capabilities_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            permanent_capabilities=None,
+        )
+        assert "Evolved Capabilities" not in user
+
+    def test_allowed_packages_included(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            allowed_packages=["requests", "pandas", "playwright"],
+        )
+        assert "## Allowed Packages" in user
+        assert "pandas" in user
+        assert "requests" in user
+
+    def test_no_allowed_packages_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            allowed_packages=None,
+        )
+        assert "Allowed Packages" not in user
+
+    def test_system_prompt_has_capability_section(self):
+        system, _ = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+        )
+        assert "Capability Evolution" in system
+        assert "capability" in system.lower()
+
+
+class TestExtractCapabilityProposal:
+    """extract_capability_proposal() should parse capability blocks."""
+
+    def test_extracts_valid_proposal(self):
+        response = '''## Reflection
+Trying browser automation.
+
+```python
+def main():
+    pass
+```
+
+```capability
+{
+  "name": "web_scraper",
+  "description": "Scrape web pages",
+  "dependencies": ["requests", "beautifulsoup4"],
+  "tags": ["web"],
+  "source_code": "import requests\\nprint('hello')"
+}
+```
+'''
+        proposal = extract_capability_proposal(response)
+        assert proposal is not None
+        assert proposal["name"] == "web_scraper"
+        assert proposal["dependencies"] == ["requests", "beautifulsoup4"]
+        assert proposal["source_code"] == "import requests\nprint('hello')"
+
+    def test_no_capability_block(self):
+        response = "## Reflection\nJust code.\n\n```python\npass\n```"
+        assert extract_capability_proposal(response) is None
+
+    def test_invalid_json(self):
+        response = "```capability\nnot valid json\n```"
+        assert extract_capability_proposal(response) is None
+
+    def test_missing_required_field(self):
+        response = '```capability\n{"name": "test", "description": "d"}\n```'
+        assert extract_capability_proposal(response) is None
+
+    def test_dependencies_must_be_list(self):
+        response = '```capability\n{"name": "t", "description": "d", "dependencies": "requests", "source_code": "x"}\n```'
+        assert extract_capability_proposal(response) is None
+
+    def test_empty_dependencies_ok(self):
+        response = '```capability\n{"name": "t", "description": "d", "dependencies": [], "source_code": "print(1)"}\n```'
+        proposal = extract_capability_proposal(response)
+        assert proposal is not None
+        assert proposal["dependencies"] == []

@@ -67,6 +67,13 @@ dimensions = 256
 # model = "qwen3.5-plus"
 # max_tokens = 8192
 
+[ring1.skill_sandbox]
+enabled = true
+base_dir = "data/skill_envs"
+max_envs = 10
+# Extra packages beyond the built-in allowlist (merged with validator defaults).
+extra_allowed_packages = []
+
 [ring1.skill_sync]
 enabled = true
 interval_sec = 7200          # 2 hours between sync cycles

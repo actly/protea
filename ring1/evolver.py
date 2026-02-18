@@ -12,7 +12,7 @@ import pathlib
 from typing import NamedTuple
 
 from ring1.llm_base import LLMClient, LLMError
-from ring1.prompts import build_evolution_prompt, extract_python_code, extract_reflection
+from ring1.prompts import build_evolution_prompt, extract_python_code, extract_reflection, extract_capability_proposal
 
 log = logging.getLogger("protea.evolver")
 
@@ -87,6 +87,9 @@ class Evolver:
         gene_pool: list[dict] | None = None,
         evolution_intent: dict | None = None,
         user_profile_summary: str = "",
+        tool_names: list[str] | None = None,
+        permanent_capabilities: list[dict] | None = None,
+        allowed_packages: list[str] | None = None,
     ) -> EvolutionResult:
         """Run one evolution cycle.
 
@@ -131,6 +134,9 @@ class Evolver:
             gene_pool=gene_pool,
             evolution_intent=evolution_intent,
             user_profile_summary=user_profile_summary,
+            tool_names=tool_names,
+            permanent_capabilities=permanent_capabilities,
+            allowed_packages=allowed_packages,
         )
 
         # 4. Call Claude API.
@@ -149,6 +155,11 @@ class Evolver:
                 log.debug("Stored reflection for gen-%d", generation)
             except Exception:
                 log.debug("Failed to store reflection", exc_info=True)
+
+        # 5b. Extract optional capability proposal.
+        capability_proposal = extract_capability_proposal(response)
+        if capability_proposal:
+            log.info("Capability proposal detected: %s", capability_proposal.get("name"))
 
         # 6. Extract code.
         new_source = extract_python_code(response)
@@ -176,15 +187,33 @@ class Evolver:
             else {"blast_radius": blast_radius}
         )
 
-        # Store evolution intent in memory.
+        # Include capability proposal in metadata if present.
+        if capability_proposal:
+            metadata["capability_proposal"] = capability_proposal
+
+        # Store evolution intent in memory (with fuzzy deduplication).
         if self.memory_store and evolution_intent:
             try:
-                self.memory_store.add(
-                    generation,
+                # Build the content string
+                content = f"{evolution_intent['intent']}: {', '.join(evolution_intent['signals'])}"
+                
+                # Check for duplicates using fuzzy matching (85% similarity threshold)
+                is_duplicate = self.memory_store.is_duplicate_content(
                     "evolution_intent",
-                    f"{evolution_intent['intent']}: {', '.join(evolution_intent['signals'])}",
-                    metadata=metadata,
+                    content,
+                    lookback=5,
+                    similarity_threshold=0.85
                 )
+                
+                if not is_duplicate:
+                    self.memory_store.add(
+                        generation,
+                        "evolution_intent",
+                        content,
+                        metadata=metadata,
+                    )
+                else:
+                    log.debug(f"Skipping duplicate evolution_intent: {content}")
             except Exception:
                 log.debug("Failed to store evolution intent", exc_info=True)
 

@@ -30,11 +30,13 @@ class SkillSyncer:
         registry_client: RegistryClient,
         user_profiler: UserProfiler | None = None,
         max_discover: int = 5,
+        allowed_packages: frozenset[str] | None = None,
     ) -> None:
         self.skill_store = skill_store
         self.registry = registry_client
         self.profiler = user_profiler
         self.max_discover = max_discover
+        self._allowed_packages = allowed_packages
 
     def sync(self) -> dict:
         """Run a full sync cycle: publish then discover.
@@ -81,6 +83,7 @@ class SkillSyncer:
                     parameters=skill.get("parameters"),
                     tags=skill.get("tags"),
                     source_code=skill.get("source_code", ""),
+                    dependencies=skill.get("dependencies"),
                 )
                 if resp is not None:
                     self.skill_store.mark_published(skill["name"])
@@ -137,9 +140,14 @@ class SkillSyncer:
                 if not skill_data:
                     continue
 
-                # Validate security.
+                # Validate security (code + dependencies).
                 source_code = skill_data.get("source_code", "")
                 if not self._validate_skill(name, source_code):
+                    rejected += 1
+                    continue
+
+                dependencies = skill_data.get("dependencies", [])
+                if dependencies and not self._validate_dependencies(name, dependencies):
                     rejected += 1
                     continue
 
@@ -197,4 +205,17 @@ class SkillSyncer:
                 "Sync: skill %r passed with warnings: %s",
                 name, "; ".join(result.warnings),
             )
+        return True
+
+    def _validate_dependencies(self, name: str, dependencies: list[str]) -> bool:
+        """Run dependency validation against the allowlist."""
+        from ring1.skill_validator import validate_dependencies
+
+        result = validate_dependencies(dependencies, self._allowed_packages)
+        if not result.safe:
+            log.warning(
+                "Sync: rejected skill %r — bad deps: %s",
+                name, "; ".join(result.errors),
+            )
+            return False
         return True

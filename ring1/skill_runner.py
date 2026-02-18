@@ -21,7 +21,7 @@ log = logging.getLogger("protea.skill_runner")
 class SkillRunner:
     """Manage a single independently-running skill process."""
 
-    def __init__(self) -> None:
+    def __init__(self, venv_manager=None) -> None:
         self._proc: subprocess.Popen | None = None
         self._skill_name: str = ""
         self._start_time: float = 0.0
@@ -29,15 +29,18 @@ class SkillRunner:
         self._log_fh = None
         self._script_path: str = ""
         self._port: int | None = None
+        self._venv_manager = venv_manager
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def run(self, skill_name: str, source_code: str) -> tuple[int, str]:
+    def run(self, skill_name: str, source_code: str, dependencies: list[str] | None = None) -> tuple[int, str]:
         """Start a skill process.  Returns (pid, message).
 
         If a skill is already running it is stopped first.
+        If *dependencies* are provided and a VenvManager is available,
+        the skill runs inside a dedicated venv with those packages installed.
         """
         if self.is_running():
             self.stop()
@@ -63,8 +66,16 @@ class SkillRunner:
         os.close(hb_fd)
         env = {**os.environ, "PROTEA_HEARTBEAT": hb_path, "PYTHONUNBUFFERED": "1"}
 
+        # Choose interpreter: venv Python if deps exist, else sys.executable.
+        python = sys.executable
+        if dependencies and self._venv_manager:
+            try:
+                python = str(self._venv_manager.ensure_env(skill_name, dependencies))
+            except Exception as exc:
+                return 0, f"Failed to setup environment: {exc}"
+
         proc = subprocess.Popen(
-            [sys.executable, script_path],
+            [python, script_path],
             env=env,
             stdout=log_fh,
             stderr=subprocess.STDOUT,

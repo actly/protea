@@ -80,8 +80,9 @@ def make_run_skill_tool(skill_store, skill_runner, registry_client=None) -> Tool
             log.info("Stopped previous skill '%s' to start '%s'", old_name, skill_name)
 
         # 3. Start the skill.
+        dependencies = skill.get("dependencies") or None
         try:
-            pid, message = skill_runner.run(skill_name, source_code)
+            pid, message = skill_runner.run(skill_name, source_code, dependencies=dependencies)
         except Exception as exc:
             return f"Error starting skill '{skill_name}': {exc}"
 
