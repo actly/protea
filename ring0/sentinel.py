@@ -1503,5 +1503,6 @@ def main() -> None:
     try:
         run(project_root)
     except KeyboardInterrupt:
+        pass
+    finally:
         print("\nProtea stopped.")
-        raise SystemExit(0)
