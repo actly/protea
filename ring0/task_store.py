@@ -6,11 +6,16 @@ Pure stdlib — no external dependencies.
 
 from __future__ import annotations
 
-import pathlib
-import sqlite3
 import time
 
-_CREATE_TABLE = """\
+from ring0.sqlite_store import SQLiteStore
+
+
+class TaskStore(SQLiteStore):
+    """Store and retrieve tasks in a local SQLite database."""
+
+    _TABLE_NAME = "tasks"
+    _CREATE_TABLE = """\
 CREATE TABLE IF NOT EXISTS tasks (
     id           INTEGER PRIMARY KEY,
     task_id      TEXT    NOT NULL UNIQUE,
@@ -22,20 +27,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_at REAL    DEFAULT NULL
 )
 """
-
-
-class TaskStore:
-    """Store and retrieve tasks in a local SQLite database."""
-
-    def __init__(self, db_path: pathlib.Path) -> None:
-        self.db_path = db_path
-        with self._connect() as con:
-            con.execute(_CREATE_TABLE)
-
-    def _connect(self) -> sqlite3.Connection:
-        con = sqlite3.connect(str(self.db_path))
-        con.row_factory = sqlite3.Row
-        return con
 
     def add(
         self,
@@ -109,14 +100,3 @@ class TaskStore:
                 "SELECT COUNT(*) AS cnt FROM tasks WHERE status = 'pending'",
             ).fetchone()
             return row["cnt"]
-
-    def count(self) -> int:
-        """Return total number of tasks."""
-        with self._connect() as con:
-            row = con.execute("SELECT COUNT(*) AS cnt FROM tasks").fetchone()
-            return row["cnt"]
-
-    def clear(self) -> None:
-        """Delete all tasks."""
-        with self._connect() as con:
-            con.execute("DELETE FROM tasks")

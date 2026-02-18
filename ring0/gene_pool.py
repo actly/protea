@@ -13,11 +13,23 @@ import hashlib
 import logging
 import pathlib
 import re
-import sqlite3
+
+from ring0.sqlite_store import SQLiteStore
 
 log = logging.getLogger("protea.gene_pool")
 
-_CREATE_TABLE = """\
+# Heartbeat boilerplate patterns to skip during summary extraction.
+_SKIP_NAMES = frozenset({
+    "heartbeat_loop", "write_heartbeat", "main", "_heartbeat_loop",
+    "heartbeat_thread", "start_heartbeat", "_write_heartbeat",
+})
+
+
+class GenePool(SQLiteStore):
+    """Top-N gene storage for evolutionary inheritance."""
+
+    _TABLE_NAME = "gene_pool"
+    _CREATE_TABLE = """\
 CREATE TABLE IF NOT EXISTS gene_pool (
     id          INTEGER PRIMARY KEY,
     generation  INTEGER NOT NULL,
@@ -28,26 +40,9 @@ CREATE TABLE IF NOT EXISTS gene_pool (
 )
 """
 
-# Heartbeat boilerplate patterns to skip during summary extraction.
-_SKIP_NAMES = frozenset({
-    "heartbeat_loop", "write_heartbeat", "main", "_heartbeat_loop",
-    "heartbeat_thread", "start_heartbeat", "_write_heartbeat",
-})
-
-
-class GenePool:
-    """Top-N gene storage for evolutionary inheritance."""
-
     def __init__(self, db_path: pathlib.Path, max_size: int = 100) -> None:
-        self.db_path = db_path
+        super().__init__(db_path)
         self.max_size = max_size
-        with self._connect() as con:
-            con.execute(_CREATE_TABLE)
-
-    def _connect(self) -> sqlite3.Connection:
-        con = sqlite3.connect(str(self.db_path))
-        con.row_factory = sqlite3.Row
-        return con
 
     def add(self, generation: int, score: float, source_code: str, detail: str | None = None) -> bool:
         """Extract gene summary from source_code and store if score qualifies.
@@ -106,12 +101,6 @@ class GenePool:
                 (n,),
             ).fetchall()
             return [dict(r) for r in rows]
-
-    def count(self) -> int:
-        """Return total number of genes stored."""
-        with self._connect() as con:
-            row = con.execute("SELECT COUNT(*) AS cnt FROM gene_pool").fetchone()
-            return row["cnt"]
 
     def backfill(self, skill_store) -> int:
         """One-time backfill from existing crystallized skills.

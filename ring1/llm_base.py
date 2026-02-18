@@ -1,13 +1,21 @@
 """LLM client abstraction — ABC + factory for multi-provider support.
 
 Defines the base interface that all LLM clients must implement,
-and a factory function to instantiate the correct client by provider name.
+shared retry logic, and a factory function to instantiate the correct
+client by provider name.
 """
 
 from __future__ import annotations
 
 import abc
+import json
+import logging
+import time
+import urllib.error
+import urllib.request
 from typing import Callable
+
+log = logging.getLogger("protea.llm_base")
 
 
 class LLMError(Exception):
@@ -16,6 +24,11 @@ class LLMError(Exception):
 
 class LLMClient(abc.ABC):
     """Abstract base class for LLM API clients."""
+
+    _RETRYABLE_CODES: set[int] = {429, 500, 502, 503}
+    _MAX_RETRIES: int = 3
+    _BASE_DELAY: float = 2.0
+    _LOG_PREFIX: str = "LLM API"
 
     @abc.abstractmethod
     def send_message(self, system_prompt: str, user_message: str) -> str:
@@ -31,6 +44,64 @@ class LLMClient(abc.ABC):
         max_rounds: int = 5,
     ) -> str:
         """Send a message with tool-use loop and return the final text response."""
+
+    def _call_api_with_retry(self, url: str, data: bytes, headers: dict) -> dict:
+        """HTTP POST with exponential backoff retry.
+
+        Retries on transient errors (status codes in ``_RETRYABLE_CODES``)
+        and network/timeout errors.  Subclasses customize behaviour via
+        ``_RETRYABLE_CODES``, ``_MAX_RETRIES``, ``_BASE_DELAY``, and
+        ``_LOG_PREFIX`` class attributes.
+        """
+        last_error: Exception | None = None
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                req = urllib.request.Request(
+                    url, data=data, headers=headers, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                code = exc.code
+                if code in self._RETRYABLE_CODES and attempt < self._MAX_RETRIES - 1:
+                    delay = self._BASE_DELAY * (2 ** attempt)
+                    log.warning(
+                        "%s %d — retry %d/%d in %.1fs",
+                        self._LOG_PREFIX, code, attempt + 1, self._MAX_RETRIES, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise LLMError(
+                    f"{self._LOG_PREFIX} HTTP {code}: "
+                    f"{exc.read().decode('utf-8', errors='replace')}"
+                ) from exc
+            except urllib.error.URLError as exc:
+                last_error = exc
+                if attempt < self._MAX_RETRIES - 1:
+                    delay = self._BASE_DELAY * (2 ** attempt)
+                    log.warning(
+                        "%s network error — retry %d/%d in %.1fs",
+                        self._LOG_PREFIX, attempt + 1, self._MAX_RETRIES, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise LLMError(f"{self._LOG_PREFIX} network error: {exc}") from exc
+            except (TimeoutError, OSError) as exc:
+                last_error = exc
+                if attempt < self._MAX_RETRIES - 1:
+                    delay = self._BASE_DELAY * (2 ** attempt)
+                    log.warning(
+                        "%s timeout — retry %d/%d in %.1fs",
+                        self._LOG_PREFIX, attempt + 1, self._MAX_RETRIES, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise LLMError(f"{self._LOG_PREFIX} timeout: {exc}") from exc
+
+        raise LLMError(
+            f"{self._LOG_PREFIX} failed after {self._MAX_RETRIES} retries"
+        ) from last_error
 
 
 # Default API endpoints for each provider.

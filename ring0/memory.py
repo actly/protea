@@ -7,10 +7,15 @@ directives) across generations.  Pure stdlib — no external dependencies.
 from __future__ import annotations
 
 import json
-import pathlib
-import sqlite3
 
-_CREATE_TABLE = """\
+from ring0.sqlite_store import SQLiteStore
+
+
+class MemoryStore(SQLiteStore):
+    """Store and retrieve experiential memories in a local SQLite database."""
+
+    _TABLE_NAME = "memory"
+    _CREATE_TABLE = """\
 CREATE TABLE IF NOT EXISTS memory (
     id          INTEGER PRIMARY KEY,
     generation  INTEGER  NOT NULL,
@@ -21,22 +26,8 @@ CREATE TABLE IF NOT EXISTS memory (
 )
 """
 
-
-class MemoryStore:
-    """Store and retrieve experiential memories in a local SQLite database."""
-
-    def __init__(self, db_path: pathlib.Path) -> None:
-        self.db_path = db_path
-        with self._connect() as con:
-            con.execute(_CREATE_TABLE)
-
-    def _connect(self) -> sqlite3.Connection:
-        con = sqlite3.connect(str(self.db_path))
-        con.row_factory = sqlite3.Row
-        return con
-
     @staticmethod
-    def _row_to_dict(row: sqlite3.Row) -> dict:
+    def _row_to_dict(row) -> dict:
         d = dict(row)
         # Parse metadata JSON back to dict.
         if "metadata" in d and isinstance(d["metadata"], str):
@@ -82,14 +73,3 @@ class MemoryStore:
                 (entry_type, limit),
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
-
-    def count(self) -> int:
-        """Return total number of memory entries."""
-        with self._connect() as con:
-            row = con.execute("SELECT COUNT(*) AS cnt FROM memory").fetchone()
-            return row["cnt"]
-
-    def clear(self) -> None:
-        """Delete all memory entries."""
-        with self._connect() as con:
-            con.execute("DELETE FROM memory")

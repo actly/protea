@@ -7,22 +7,10 @@ self-evolving lifecycle.  Pure stdlib — no external dependencies.
 from __future__ import annotations
 
 import json
-import pathlib
 import re
 import sqlite3
 
-_CREATE_TABLE = """\
-CREATE TABLE IF NOT EXISTS fitness_log (
-    id          INTEGER PRIMARY KEY,
-    generation  INTEGER  NOT NULL,
-    commit_hash TEXT     NOT NULL,
-    score       REAL     NOT NULL,
-    runtime_sec REAL     NOT NULL,
-    survived    BOOLEAN  NOT NULL,
-    timestamp   TEXT     DEFAULT CURRENT_TIMESTAMP
-)
-"""
-
+from ring0.sqlite_store import SQLiteStore
 
 _STRUCTURED_PATTERNS = [
     re.compile(r"^\s*[\[{]"),           # JSON array/object start
@@ -187,27 +175,28 @@ def evaluate_output(
     return round(score, 4), detail
 
 
-class FitnessTracker:
+class FitnessTracker(SQLiteStore):
     """Evaluate and record fitness scores in a local SQLite database."""
 
-    def __init__(self, db_path: pathlib.Path) -> None:
-        self.db_path = db_path
-        with self._connect() as con:
-            con.execute(_CREATE_TABLE)
-            # Migrate: add detail column if missing.
-            try:
-                con.execute("ALTER TABLE fitness_log ADD COLUMN detail TEXT")
-            except sqlite3.OperationalError:
-                pass  # column already exists
+    _TABLE_NAME = "fitness_log"
+    _CREATE_TABLE = """\
+CREATE TABLE IF NOT EXISTS fitness_log (
+    id          INTEGER PRIMARY KEY,
+    generation  INTEGER  NOT NULL,
+    commit_hash TEXT     NOT NULL,
+    score       REAL     NOT NULL,
+    runtime_sec REAL     NOT NULL,
+    survived    BOOLEAN  NOT NULL,
+    timestamp   TEXT     DEFAULT CURRENT_TIMESTAMP
+)
+"""
 
-    def _connect(self) -> sqlite3.Connection:
-        con = sqlite3.connect(str(self.db_path))
-        con.row_factory = sqlite3.Row
-        return con
-
-    @staticmethod
-    def _row_to_dict(row: sqlite3.Row) -> dict:
-        return dict(row)
+    def _migrate(self, con: sqlite3.Connection) -> None:
+        """Add detail column if missing (schema migration)."""
+        try:
+            con.execute("ALTER TABLE fitness_log ADD COLUMN detail TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
     def record(
         self,
@@ -334,3 +323,12 @@ class FitnessTracker:
         if len(scores) < window:
             return False  # not enough data yet
         return (max(scores) - min(scores)) <= epsilon
+
+    def get_max_generation(self) -> int:
+        """Return the highest recorded generation number, or -1 if empty."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT MAX(generation) AS max_gen FROM fitness_log"
+            ).fetchone()
+            val = row["max_gen"] if row else None
+            return val if val is not None else -1
