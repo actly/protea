@@ -36,7 +36,7 @@ class TestRenderFitnessSvg:
         svg = _render_fitness_svg(history)
         assert "<svg" in svg
         assert "polyline" in svg
-        assert svg.count("circle") == 5
+        assert svg.count("circle") == 5 + 2  # 5 data points + 2 legend circles
 
 
 class TestRenderCategoryBarsSvg:

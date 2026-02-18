@@ -88,6 +88,14 @@ tr:hover { background: #151a3a; }
 .stat-item .label { color: #999; }
 .stat-item .val { color: #fff; font-weight: 600; }
 .importance-bar { display: inline-block; height: 12px; border-radius: 2px; background: #667eea; vertical-align: middle; }
+.intent-repair .gen { color: #ff6b6b; }
+.intent-repair::before { background: #ff6b6b; }
+.intent-optimize .gen { color: #4ecdc4; }
+.intent-optimize::before { background: #4ecdc4; }
+.intent-explore .gen { color: #667eea; }
+.intent-explore::before { background: #667eea; }
+.intent-adapt .gen { color: #feca57; }
+.intent-adapt::before { background: #feca57; }
 """
 
 _NAV_HTML = """\
@@ -172,6 +180,14 @@ def _render_fitness_svg(history: list[dict], width: int = 800, height: int = 200
         # Generation label (sparse to avoid clutter)
         if n <= 20 or i % max(1, n // 10) == 0:
             parts.append(f'<text x="{x:.1f}" y="{margin + plot_h + 15}" fill="#555" font-size="9" text-anchor="middle">G{gens[i]}</text>')
+
+    # Legend
+    lx = margin + plot_w - 140
+    ly = margin + 8
+    parts.append(f'<circle cx="{lx}" cy="{ly}" r="4" fill="#667eea"/>')
+    parts.append(f'<text x="{lx + 8}" y="{ly + 4}" fill="#999" font-size="10">survived</text>')
+    parts.append(f'<circle cx="{lx + 70}" cy="{ly}" r="4" fill="#ff6b6b"/>')
+    parts.append(f'<text x="{lx + 78}" y="{ly + 4}" fill="#999" font-size="10">died</text>')
 
     parts.append("</svg>")
     return "".join(parts)
@@ -285,9 +301,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         by_tier = mem_stats.get("by_tier", {})
+        active_total = sum(v for k, v in by_tier.items() if k != "archive")
         mem_card = (
             f'<div class="card"><h3>Memory</h3>'
-            f'<div class="value">{mem_stats.get("total", 0)}</div>'
+            f'<div class="value">{active_total}</div>'
             f'<div class="detail">hot: {by_tier.get("hot", 0)} warm: {by_tier.get("warm", 0)} cold: {by_tier.get("cold", 0)}</div>'
             f'</div>'
         )
@@ -336,6 +353,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             f'<div class="detail">top interest</div></div>'
         )
 
+        # Generation / Ring 2 status
+        gen_num = 0
+        r2_alive = False
+        if self.state:
+            try:
+                snap = self.state.snapshot()
+                gen_num = snap.get("generation", 0)
+                r2_alive = snap.get("alive", False)
+            except Exception:
+                pass
+        status_label = '<span style="color:#4ecdc4">alive</span>' if r2_alive else '<span style="color:#ff6b6b">dead</span>'
+        gen_card = (
+            f'<div class="card"><h3>Generation</h3>'
+            f'<div class="value">{gen_num}</div>'
+            f'<div class="detail">Ring 2: {status_label}</div></div>'
+        )
+
         # Fitness chart
         fitness_svg = ""
         if self.fitness_tracker:
@@ -347,7 +381,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pass
 
         body = (
-            f'<div class="cards">{mem_card}{skill_card}{intent_card}{profile_card}</div>'
+            f'<div class="cards">{gen_card}{mem_card}{skill_card}{intent_card}{profile_card}</div>'
             f'<h2 style="margin-bottom:1rem">Fitness Trend</h2>'
             f'{fitness_svg}'
         )
@@ -444,12 +478,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             desc = _esc((s.get("description", ""))[:120])
             usage = s.get("usage_count", 0)
             source = _esc(s.get("source", ""))
+            # Permanent badge
+            perm_badge = ' <span class="badge" style="background:#4ecdc4;color:#000">permanent</span>' if s.get("permanent") else ""
+            # Dependencies
+            deps = s.get("dependencies") or []
+            deps_html = ""
+            if deps:
+                deps_html = f'<div class="meta" style="margin-top:0.3rem">deps: {_esc(", ".join(deps))}</div>'
             cards.append(
                 f'<div class="skill-card">'
-                f'<h3>{name}</h3>'
+                f'<h3>{name}{perm_badge}</h3>'
                 f'<div class="desc">{desc}</div>'
                 f'<div class="tags">{tags_html}</div>'
                 f'<div class="meta">usage: {usage} | source: {source}</div>'
+                f'{deps_html}'
                 f'</div>'
             )
 
@@ -478,9 +520,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Parse intent from content (format: "INTENT: signal1, signal2")
             intent_name = content.split(":")[0].strip() if ":" in content else content[:30]
             signals = content.split(":", 1)[1].strip() if ":" in content else ""
+            intent_cls = f"intent-{intent_name.lower()}" if intent_name.lower() in ("repair", "optimize", "explore", "adapt") else ""
 
             items.append(
-                f'<div class="timeline-item">'
+                f'<div class="timeline-item {intent_cls}">'
                 f'<div class="gen">Gen {gen}: {_esc(intent_name.upper())}</div>'
                 f'<div class="info">signals: {_esc(signals)}</div>'
                 + (f'<div class="info">scope: {_esc(scope)} ({lines} lines)</div>' if scope else "")
