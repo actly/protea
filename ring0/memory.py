@@ -37,12 +37,12 @@ _MIGRATIONS = [
 # Importance base scores by entry type.
 _IMPORTANCE_BASE: dict[str, float] = {
     "directive": 0.9,
-    "crash_log": 0.8,
+    "crash_log": 0.65,  # Lowered from 0.8 to allow cleanup of repetitive crashes
     "task": 0.7,
     "reflection": 0.6,
     "p1_task": 0.5,
     "observation": 0.5,
-    "evolution_intent": 0.4,
+    "evolution_intent": 0.35,  # Lowered from 0.4 for more aggressive cleanup
 }
 
 _KEYWORD_RE = re.compile(r"[a-zA-Z0-9_]+")
@@ -109,7 +109,65 @@ def _compute_importance(entry_type: str, content: str) -> float:
 
         return round(base, 2)
 
-    # Non-task types: original logic.
+    # Content quality filtering for evolution_intent entries.
+    if entry_type == "evolution_intent":
+        content_lower = content.lower()
+        
+        # Low-value patterns → reduce importance
+        low_value_patterns = [
+            ("optimize: survived", 0.25),  # Too generic
+            ("repair: error", 0.30),        # Failed repairs
+            ("repair: ⚠", 0.30),
+            ("indexerror", 0.30),
+            ("list index out of range", 0.30),
+            ("tasks.jsonl not found", 0.25),  # Known persistent error
+        ]
+        
+        for pattern, penalty_score in low_value_patterns:
+            if pattern in content_lower:
+                return penalty_score
+        
+        # High-value patterns → boost importance
+        high_value_patterns = [
+            "new feature",
+            "performance improvement",
+            "bug fix:",
+            "optimization:",
+            "refactor:",
+            "implement",
+        ]
+        
+        if any(pattern in content_lower for pattern in high_value_patterns):
+            base = min(base + 0.15, 0.65)
+        
+        return round(base, 2)
+
+    # Content quality filtering for crash_log entries.
+    if entry_type == "crash_log":
+        content_lower = content.lower()
+        
+        # Generic/repetitive failures → lower importance
+        if "clean exit but heartbeat lost" in content_lower:
+            return 0.50  # Very common, less actionable
+        
+        if "timeout" in content_lower or "timed out" in content_lower:
+            return 0.55
+        
+        # Novel crashes → higher importance
+        novel_indicators = [
+            "traceback",
+            "exception:",
+            "segmentation fault",
+            "memory error",
+            "assertion failed",
+        ]
+        
+        if any(indicator in content_lower for indicator in novel_indicators):
+            base = min(base + 0.10, 0.75)
+        
+        return round(base, 2)
+
+    # Non-task/special types: original logic.
     if len(content) > 500:
         base = min(base + 0.05, 1.0)
     return round(base, 2)
@@ -267,6 +325,27 @@ class MemoryStore(SQLiteStore):
                 (entry_type, limit),
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
+
+    def query(
+        self,
+        query: str = "",
+        limit: int = 10,
+        memory_type: str | None = None,
+    ) -> list[dict]:
+        """Query memories with optional type filtering.
+        
+        Args:
+            query: Unused (kept for API compatibility with evolver/sentinel)
+            limit: Maximum number of results
+            memory_type: Filter by entry_type if provided
+            
+        Returns:
+            List of memory entries, most recent first
+        """
+        if memory_type:
+            return self.get_by_type(memory_type, limit=limit)
+        else:
+            return self.get_recent(limit=limit)
 
     def get_by_tier(self, tier: str, limit: int = 50) -> list[dict]:
         """Return entries in a specific tier, most recent first."""
@@ -464,6 +543,45 @@ class MemoryStore(SQLiteStore):
                 "by_tier": by_tier,
                 "by_type": by_type,
             }
+
+    def is_duplicate_content(
+        self,
+        entry_type: str,
+        content: str,
+        lookback: int = 5,
+        similarity_threshold: float = 0.85,
+    ) -> bool:
+        """Check if content is a duplicate of recent entries (exact or fuzzy match).
+
+        Uses SequenceMatcher for fuzzy comparison to catch near-duplicates.
+
+        Args:
+            entry_type: Type of entry to check
+            content: Content to check for duplication
+            lookback: Number of recent entries to check
+            similarity_threshold: Minimum similarity (0-1) to consider as duplicate
+
+        Returns:
+            True if duplicate found, False otherwise
+        """
+        from difflib import SequenceMatcher
+
+        recent = self.get_by_type(entry_type, limit=lookback)
+        content_clean = content.strip().lower()
+
+        for entry in recent:
+            entry_content = entry.get("content", "").strip().lower()
+
+            # Exact match
+            if content_clean == entry_content:
+                return True
+
+            # Fuzzy match
+            similarity = SequenceMatcher(None, content_clean, entry_content).ratio()
+            if similarity >= similarity_threshold:
+                return True
+
+        return False
 
     def compact(self, current_generation: int, curator=None) -> dict:
         """Run tiered compaction: hot→warm, warm→cold (LLM or rules), cold cleanup.

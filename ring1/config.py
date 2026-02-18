@@ -22,8 +22,8 @@ class Ring1Config(NamedTuple):
     p1_idle_threshold_sec: int
     p1_check_interval_sec: int
     workspace_path: str = "."
-    shell_timeout: int = 30
-    max_tool_rounds: int = 25
+    shell_timeout: int = 120
+    max_tool_rounds: int = 50
     llm_provider: str = ""       # "anthropic"|"openai"|"deepseek"|"qwen" (empty = anthropic)
     llm_api_key_env: str = ""    # env var name for API key (empty = CLAUDE_API_KEY)
     llm_model: str = ""          # model name (empty = claude_model)

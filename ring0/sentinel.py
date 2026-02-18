@@ -171,7 +171,7 @@ def _try_install_capability(proposal, skill_store, venv_manager, allowed_package
 
     Returns True if installed successfully.
     """
-    from ring1.skill_validator import validate_skill, validate_dependencies
+    from ring1.skill_validator import validate_skill_local, validate_dependencies
 
     name = proposal.get("name", "")
     source_code = proposal.get("source_code", "")
@@ -181,8 +181,8 @@ def _try_install_capability(proposal, skill_store, venv_manager, allowed_package
         log.warning("Capability proposal missing name or source_code")
         return False
 
-    # 1. Validate source code.
-    code_result = validate_skill(source_code)
+    # 1. Validate source code (local/lenient — evolved skills are trusted).
+    code_result = validate_skill_local(source_code)
     if not code_result.safe:
         log.warning("Capability '%s' rejected: unsafe code — %s", name, code_result.errors)
         return False
@@ -810,13 +810,8 @@ def run(project_root: pathlib.Path) -> None:
                 except subprocess.CalledProcessError:
                     pass
                 source = (ring2_path / "main.py").read_text()
-                if memory_store:
-                    memory_store.add(
-                        generation, "observation",
-                        f"Gen {generation} survived {elapsed:.0f}s (max {params.max_runtime_sec}s). "
-                        f"Code: {len(source)} bytes.\n"
-                        f"Output (last 50 lines):\n{output[-1000:] if output else '(no output)'}",
-                    )
+                # Note: We no longer store observations in memory (see line 234 comment).
+                # They're noisy per-generation logs that crowd out useful memories.
 
                 # Store gene in pool (best-effort).
                 if gene_pool:

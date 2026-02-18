@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 
 import pytest
 
@@ -38,17 +39,48 @@ class TestResolveSafe:
         result = _resolve_safe(workspace, "sub/nested.txt")
         assert result == workspace / "sub" / "nested.txt"
 
-    def test_dotdot_escape_blocked(self, workspace):
-        with pytest.raises(ValueError, match="escapes workspace"):
-            _resolve_safe(workspace, "../../../etc/passwd")
-
-    def test_absolute_path_outside_blocked(self, workspace):
-        with pytest.raises(ValueError, match="escapes workspace"):
+    def test_dotdot_escape_outside_home_blocked(self, workspace):
+        """Paths that escape the user's home directory are blocked."""
+        with pytest.raises(ValueError, match="outside home"):
             _resolve_safe(workspace, "/etc/passwd")
+
+    def test_absolute_path_within_home_allowed(self, workspace):
+        """Absolute paths within ~ are allowed."""
+        home = pathlib.Path.home()
+        result = _resolve_safe(workspace, str(home))
+        assert result == home.resolve()
+
+    def test_tilde_path_allowed(self, workspace):
+        """~/… paths are resolved and allowed."""
+        result = _resolve_safe(workspace, "~")
+        assert result == pathlib.Path.home().resolve()
 
     def test_dot_path(self, workspace):
         result = _resolve_safe(workspace, ".")
         assert result == workspace.resolve()
+
+    def test_sensitive_ssh_blocked(self, workspace):
+        with pytest.raises(ValueError, match="protected"):
+            _resolve_safe(workspace, "~/.ssh/id_rsa")
+
+    def test_sensitive_gnupg_blocked(self, workspace):
+        with pytest.raises(ValueError, match="protected"):
+            _resolve_safe(workspace, "~/.gnupg/secring.gpg")
+
+    def test_sensitive_aws_blocked(self, workspace):
+        with pytest.raises(ValueError, match="protected"):
+            _resolve_safe(workspace, "~/.aws/credentials")
+
+    def test_sensitive_env_file_blocked(self, workspace):
+        with pytest.raises(ValueError, match="protected"):
+            _resolve_safe(workspace, "~/.env")
+
+    def test_env_in_subdir_allowed(self, workspace):
+        """~/.env is blocked but ~/project/.env is fine."""
+        home = pathlib.Path.home()
+        # Create a fake path — _resolve_safe only checks, doesn't require existence
+        result = _resolve_safe(workspace, str(home / "project" / ".env"))
+        assert result == (home / "project" / ".env").resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -76,10 +108,10 @@ class TestReadFile:
         result = tools["read_file"].execute({"path": "nope.txt"})
         assert "Error" in result
 
-    def test_read_escape_blocked(self, tools):
-        result = tools["read_file"].execute({"path": "../../../etc/passwd"})
+    def test_read_outside_home_blocked(self, tools):
+        result = tools["read_file"].execute({"path": "/etc/passwd"})
         assert "Error" in result
-        assert "escapes" in result
+        assert "outside home" in result
 
     def test_read_nested(self, tools):
         result = tools["read_file"].execute({"path": "sub/nested.txt"})
@@ -107,12 +139,12 @@ class TestWriteFile:
         tools["write_file"].execute({"path": "hello.txt", "content": "new content"})
         assert (workspace / "hello.txt").read_text() == "new content"
 
-    def test_write_escape_blocked(self, tools):
+    def test_write_outside_home_blocked(self, tools):
         result = tools["write_file"].execute(
-            {"path": "../../../tmp/evil.txt", "content": "bad"}
+            {"path": "/etc/evil.txt", "content": "bad"}
         )
         assert "Error" in result
-        assert "escapes" in result
+        assert "outside home" in result
 
 
 # ---------------------------------------------------------------------------
@@ -156,14 +188,14 @@ class TestEditFile:
         })
         assert "Error" in result
 
-    def test_edit_escape_blocked(self, tools):
+    def test_edit_outside_home_blocked(self, tools):
         result = tools["edit_file"].execute({
-            "path": "../../../etc/hosts",
+            "path": "/etc/hosts",
             "old_string": "localhost",
             "new_string": "evil",
         })
         assert "Error" in result
-        assert "escapes" in result
+        assert "outside home" in result
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +216,8 @@ class TestListDir:
         result = tools["list_dir"].execute({"path": "nope"})
         assert "Error" in result
 
-    def test_list_escape_blocked(self, tools):
-        result = tools["list_dir"].execute({"path": "../../../"})
+    def test_list_outside_home_blocked(self, tools):
+        result = tools["list_dir"].execute({"path": "/etc"})
         assert "Error" in result
 
     def test_list_empty_dir(self, tools, workspace):

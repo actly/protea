@@ -24,9 +24,38 @@ from ring1.tool_registry import ToolRegistry
 
 log = logging.getLogger("protea.task_executor")
 
-_MAX_REPLY_LEN = 4000  # Telegram message limit safety margin
+_MAX_REPLY_LEN = 8000  # Allow longer replies; split into segments if needed
+
+_TG_MSG_LIMIT = 4000  # Telegram hard limit ~4096, leave margin
 
 _RECALL_KEYWORD_RE = __import__("re").compile(r"[a-zA-Z0-9_\u4e00-\u9fff]+")
+
+
+def _send_segmented(reply_fn, text: str, limit: int = _TG_MSG_LIMIT) -> None:
+    """Send *text* via *reply_fn*, splitting into segments if too long.
+
+    Splits on newline boundaries to avoid breaking mid-sentence.
+    """
+    if len(text) <= limit:
+        reply_fn(text)
+        return
+
+    segments: list[str] = []
+    while text:
+        if len(text) <= limit:
+            segments.append(text)
+            break
+        # Find last newline within limit.
+        cut = text.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit  # no good break point — hard cut
+        segments.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+
+    for i, seg in enumerate(segments):
+        if len(segments) > 1:
+            seg = f"[{i + 1}/{len(segments)}]\n{seg}"
+        reply_fn(seg)
 
 
 def _extract_recall_keywords(text: str) -> list[str]:
@@ -85,12 +114,17 @@ Web tools:
 
 File tools:
 - read_file: Read a file's contents (with line numbers, offset, limit).
+  Accepts relative paths, absolute paths, or ~/… paths.
 - write_file: Write content to a file (creates parent dirs if needed).
+  Accepts relative paths, absolute paths, or ~/… paths.
 - edit_file: Search-and-replace edit on a file (old_string must be unique).
 - list_dir: List files and subdirectories.
+All file tools can access any path within the user's home directory (~/).
 
 Shell tool:
-- exec: Execute a shell command. Dangerous commands are blocked.
+- exec: Execute a shell command (timeout 120s). Only truly destructive commands
+  (rm -rf /, dd, mkfs, shutdown, fork bombs) are blocked. You CAN run browsers,
+  install packages, start services, etc.
 
 Message tool:
 - message: Send a progress update to the user during multi-step work.
@@ -410,9 +444,9 @@ class TaskExecutor:
             # Record conversation history for context continuity.
             self._record_history(task.text, response)
 
-            # Reply
+            # Reply — split into segments for Telegram's 4096-char limit.
             try:
-                self.reply_fn(response)
+                _send_segmented(self.reply_fn, response)
             except Exception:
                 log.error("Failed to send task reply", exc_info=True)
         finally:
@@ -610,7 +644,7 @@ class TaskExecutor:
             if len(report) > _MAX_REPLY_LEN:
                 report = report[:_MAX_REPLY_LEN] + "\n... (truncated)"
             try:
-                self.reply_fn(report)
+                _send_segmented(self.reply_fn, report)
             except Exception:
                 log.error("Failed to send P1 report", exc_info=True)
         finally:

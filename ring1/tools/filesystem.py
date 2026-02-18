@@ -1,6 +1,8 @@
 """Filesystem tools — read, write, edit, list directory.
 
-All paths are resolved relative to *workspace* and must not escape it.
+Paths can be absolute (anywhere within allowed boundaries) or relative
+(resolved from *workspace*).  Access is allowed within the user's home
+directory, excluding sensitive locations like ``~/.ssh``.
 
 Pure stdlib.
 """
@@ -15,16 +17,66 @@ from ring1.tool_registry import Tool
 
 log = logging.getLogger("protea.tools.filesystem")
 
+# Paths under ~ that are never accessible (read or write).
+_SENSITIVE_DIRS = frozenset({
+    ".ssh", ".gnupg", ".gpg", ".aws", ".azure", ".config/gcloud",
+    "Library/Keychains",
+})
+
+# Sensitive file names (exact match, case-insensitive) blocked anywhere.
+_SENSITIVE_FILES = frozenset({
+    ".env", ".netrc", ".npmrc", ".pypirc",
+})
+
 
 def _resolve_safe(workspace: pathlib.Path, path_str: str) -> pathlib.Path:
-    """Resolve *path_str* relative to *workspace*, rejecting escapes.
+    """Resolve *path_str*, allowing access within workspace or user home.
 
-    Raises ValueError if the resolved path is outside workspace.
+    - Relative paths are resolved from *workspace* (always allowed).
+    - Absolute paths and ``~/`` paths are accepted if they fall within
+      the user's home directory.
+    - Sensitive subdirectories (~/.ssh, ~/.gnupg, etc.) are always blocked.
+
+    Raises ValueError if the path is outside allowed boundaries or
+    touches a sensitive location.
     """
+    home = pathlib.Path.home().resolve()
     workspace = workspace.resolve()
-    target = (workspace / path_str).resolve()
-    if not (target == workspace or str(target).startswith(str(workspace) + os.sep)):
-        raise ValueError(f"Path escapes workspace: {path_str}")
+
+    # Handle ~ expansion and absolute paths.
+    if path_str.startswith("~"):
+        target = pathlib.Path(path_str).expanduser().resolve()
+    elif os.path.isabs(path_str):
+        target = pathlib.Path(path_str).resolve()
+    else:
+        target = (workspace / path_str).resolve()
+
+    # Check 1: paths within workspace are always allowed.
+    ws_str = str(workspace) + os.sep
+    if target == workspace or str(target).startswith(ws_str):
+        return target
+
+    # Check 2: paths within user home directory are allowed.
+    home_str = str(home) + os.sep
+    if not (target == home or str(target).startswith(home_str)):
+        raise ValueError(f"Path outside home directory: {path_str}")
+
+    # Check sensitive directories within home.
+    try:
+        rel = target.relative_to(home)
+    except ValueError:
+        raise ValueError(f"Path outside home directory: {path_str}")
+
+    rel_parts = rel.parts
+    for sensitive in _SENSITIVE_DIRS:
+        s_parts = pathlib.PurePosixPath(sensitive).parts
+        if rel_parts[:len(s_parts)] == s_parts:
+            raise ValueError(f"Access denied: ~/{sensitive} is a protected location")
+
+    # Check sensitive file names directly in home.
+    if target.name.lower() in _SENSITIVE_FILES and target.parent == home:
+        raise ValueError(f"Access denied: ~/{target.name} is a protected file")
+
     return target
 
 
@@ -63,14 +115,16 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
         name="read_file",
         description=(
             "Read a file's contents with line numbers.  Supports offset and "
-            "limit for partial reads of large files."
+            "limit for partial reads of large files.  Accepts relative paths "
+            "(from workspace), absolute paths, or ~/… paths within the user's "
+            "home directory."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path relative to workspace.",
+                    "description": "File path (relative, absolute, or ~/…).",
                 },
                 "offset": {
                     "type": "integer",
@@ -106,16 +160,16 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
         name="write_file",
         description=(
             "Write content to a file (creates parent directories if needed). "
-            "Paths are relative to workspace. Generated files (scripts, reports, "
-            "data) should be written to output/ subdirectory, not the root. "
-            "Overwrites existing content."
+            "Accepts relative, absolute, or ~/… paths within the user's home "
+            "directory.  Generated files (scripts, reports, data) should be "
+            "written to output/ subdirectory when possible.  Overwrites existing content."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path relative to workspace.",
+                    "description": "File path (relative, absolute, or ~/…).",
                 },
                 "content": {
                     "type": "string",
@@ -164,14 +218,14 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
         name="edit_file",
         description=(
             "Replace a unique string in a file.  The old_string must appear "
-            "exactly once.  Use for targeted edits."
+            "exactly once.  Accepts relative, absolute, or ~/… paths."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path relative to workspace.",
+                    "description": "File path (relative, absolute, or ~/…).",
                 },
                 "old_string": {
                     "type": "string",
@@ -206,7 +260,10 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
 
         lines = []
         for entry in entries:
-            rel = entry.relative_to(workspace)
+            try:
+                rel = entry.relative_to(workspace)
+            except ValueError:
+                rel = entry  # absolute path outside workspace
             suffix = "/" if entry.is_dir() else ""
             lines.append(f"{rel}{suffix}")
 
@@ -216,13 +273,13 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
 
     list_dir = Tool(
         name="list_dir",
-        description="List files and subdirectories.  Directories have a trailing /.",
+        description="List files and subdirectories.  Directories have a trailing /.  Accepts relative, absolute, or ~/… paths.",
         input_schema={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory path relative to workspace (default '.').",
+                    "description": "Directory path (relative, absolute, or ~/…).  Default '.'.",
                 },
             },
             "required": [],

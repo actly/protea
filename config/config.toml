@@ -34,8 +34,8 @@ check_interval_sec = 300
 
 [ring1.tools]
 workspace_path = "."
-shell_timeout = 30
-max_tool_rounds = 25
+shell_timeout = 120
+max_tool_rounds = 50
 
 [ring1.portal]
 enabled = false

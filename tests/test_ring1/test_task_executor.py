@@ -267,7 +267,8 @@ class TestTaskExecutor:
         (ring2 / "main.py").write_text("code")
 
         client = MagicMock()
-        client.send_message_with_tools.return_value = "x" * 5000
+        # Must exceed _MAX_REPLY_LEN (8000) to trigger truncation.
+        client.send_message_with_tools.return_value = "x" * 10000
         reply_fn = MagicMock()
         registry = _make_registry()
 
@@ -275,9 +276,28 @@ class TestTaskExecutor:
         task = Task(text="test", chat_id="123")
         executor._execute_task(task)
 
-        sent_text = reply_fn.call_args[0][0]
-        assert len(sent_text) <= _MAX_REPLY_LEN + 20  # +20 for "... (truncated)"
-        assert "truncated" in sent_text
+        # With segmented sending, all segments combined should contain the truncation marker.
+        all_sent = "".join(call[0][0] for call in reply_fn.call_args_list)
+        assert "truncated" in all_sent
+
+    def test_long_response_segmented(self, tmp_path):
+        """Responses > 4000 chars are split into multiple Telegram messages."""
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        client = MagicMock()
+        # 6000 chars: under _MAX_REPLY_LEN (no truncation) but over _TG_MSG_LIMIT (segmented)
+        client.send_message_with_tools.return_value = "x" * 6000
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
+        task = Task(text="test", chat_id="123")
+        executor._execute_task(task)
+
+        assert reply_fn.call_count >= 2  # Should be split into at least 2 segments
 
     def test_clean_stop(self):
         state = _make_state()

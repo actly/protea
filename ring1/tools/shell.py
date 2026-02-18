@@ -13,7 +13,7 @@ from ring1.tool_registry import Tool
 
 log = logging.getLogger("protea.tools.shell")
 
-_MAX_OUTPUT = 10_000  # truncate output to 10K chars
+_MAX_OUTPUT = 50_000  # truncate output to 50K chars
 
 # Patterns that are too dangerous to execute.
 _DENY_PATTERNS: list[re.Pattern] = [

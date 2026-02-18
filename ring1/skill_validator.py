@@ -1,7 +1,13 @@
-"""Security validator for skills downloaded from the Hub.
+"""Security validator for skills.
 
-Performs static analysis on skill source code to detect dangerous patterns
-before allowing installation.  Pure stdlib — no external dependencies.
+Two validation tiers:
+- **Strict** (``validate_skill``): for skills downloaded from the Hub.
+  Blocks subprocess, eval, exec, filesystem deletion, raw sockets, etc.
+- **Local** (``validate_skill_local``): for locally-created and evolved skills.
+  Only blocks truly catastrophic operations (privilege escalation, fork bombs,
+  ctypes).  Allows subprocess, sockets, file ops, etc.
+
+Pure stdlib — no external dependencies.
 """
 
 from __future__ import annotations
@@ -10,7 +16,7 @@ import re
 
 
 # ---------------------------------------------------------------------------
-# Dangerous pattern definitions
+# Dangerous pattern definitions — STRICT (Hub downloads)
 # ---------------------------------------------------------------------------
 
 # Patterns that indicate potentially dangerous code.  Each entry is
@@ -62,6 +68,30 @@ _WARNING_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Dangerous pattern definitions — LOCAL (evolved / locally-created skills)
+# ---------------------------------------------------------------------------
+
+# Only block truly catastrophic operations.  Local skills are trusted.
+_LOCAL_DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # Privilege escalation
+    (re.compile(r"\bos\.setuid\s*\("), "os.setuid() — privilege escalation"),
+    (re.compile(r"\bos\.setgid\s*\("), "os.setgid() — privilege escalation"),
+    (re.compile(r"\bctypes\.cdll\b"), "ctypes.cdll — low-level library loading"),
+    # Fork bomb patterns
+    (re.compile(r"while\s+True\s*:.*os\.fork\s*\("), "fork bomb pattern"),
+    # Recursive rm of root
+    (re.compile(r"""shutil\.rmtree\s*\(\s*['"]/['"]"""), "shutil.rmtree('/') — root deletion"),
+    (re.compile(r"""os\.system\s*\(\s*['"]rm\s+-rf\s+/['"]"""), "rm -rf / via os.system"),
+]
+
+_LOCAL_WARNING_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bctypes\b"), "ctypes — low-level system access"),
+    (re.compile(r"\bpickle\.loads?\s*\("), "pickle deserialization (potential RCE)"),
+    (re.compile(r"""['"](/etc/shadow|~?/\.ssh/id_)"""), "access to sensitive system files"),
+]
+
+
 class ValidationResult:
     """Result of skill security validation."""
 
@@ -85,18 +115,40 @@ class ValidationResult:
 
 # Seed allowlist for capability skill dependencies.
 _DEFAULT_ALLOWED_PACKAGES = frozenset({
-    # Web/Browser
-    "requests", "httpx", "beautifulsoup4", "lxml", "playwright",
+    # Web / HTTP
+    "requests", "httpx", "aiohttp", "urllib3", "websockets", "websocket-client",
+    # Browser automation
+    "playwright", "selenium", "pyppeteer",
+    # HTML/XML parsing
+    "beautifulsoup4", "lxml", "html5lib", "cssselect", "parsel",
+    # Web frameworks (for skill-hosted APIs)
+    "flask", "fastapi", "uvicorn", "starlette", "bottle", "tornado",
     # Email
     "imapclient",
-    # Data
-    "pandas", "openpyxl", "pdfplumber",
-    # Media
-    "pillow",
+    # Data / Science
+    "pandas", "numpy", "scipy", "polars", "pyarrow",
+    "openpyxl", "xlsxwriter", "csvkit",
+    # Data visualization
+    "matplotlib", "plotly", "seaborn", "altair",
+    # PDF / Documents
+    "pdfplumber", "pypdf", "reportlab", "python-docx", "python-pptx",
+    # Media / Images
+    "pillow", "opencv-python", "imageio",
+    # AI / LLM
+    "openai", "anthropic", "tiktoken", "transformers", "sentence-transformers",
     # Calendar
     "icalendar", "caldav",
+    # System / DevOps
+    "psutil", "docker", "paramiko", "fabric",
+    # Database
+    "sqlalchemy", "redis", "pymongo", "motor",
     # Utilities
-    "python-dateutil", "pyyaml", "jinja2",
+    "python-dateutil", "pyyaml", "jinja2", "click", "rich", "tqdm",
+    "pydantic", "attrs", "orjson", "msgpack",
+    # Crypto / Auth
+    "cryptography", "pyjwt", "oauthlib",
+    # Testing
+    "pytest", "httpx",
 })
 
 
@@ -122,6 +174,36 @@ def validate_dependencies(
         if pkg not in allowlist:
             result.errors.append(f"Package '{pkg}' not in allowed list")
             result.safe = False
+
+    return result
+
+
+def validate_skill_local(source_code: str) -> ValidationResult:
+    """Validate locally-created or evolved skill source code.
+
+    Much more permissive than ``validate_skill`` — only blocks privilege
+    escalation, fork bombs, and root-deletion patterns.  Allows subprocess,
+    sockets, file operations, eval/exec, etc.
+
+    Returns a ValidationResult.
+    """
+    result = ValidationResult()
+
+    if not source_code or not source_code.strip():
+        result.errors.append("empty source code")
+        result.safe = False
+        return result
+
+    for pattern, reason in _LOCAL_DANGEROUS_PATTERNS:
+        matches = pattern.findall(source_code)
+        if matches:
+            result.errors.append(reason)
+            result.safe = False
+
+    for pattern, reason in _LOCAL_WARNING_PATTERNS:
+        matches = pattern.findall(source_code)
+        if matches:
+            result.warnings.append(reason)
 
     return result
 

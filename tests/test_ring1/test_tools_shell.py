@@ -86,8 +86,8 @@ class TestShellTool:
         assert "Blocked" in result
 
     def test_output_truncation(self, shell):
-        # Generate output longer than 10K
-        result = shell.execute({"command": "python3 -c \"print('x' * 15000)\""})
+        # Generate output longer than 50K (_MAX_OUTPUT)
+        result = shell.execute({"command": "python3 -c \"print('x' * 60000)\""})
         assert "truncated" in result
 
     def test_cwd_is_workspace(self, shell, tmp_path):

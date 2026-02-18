@@ -1,6 +1,12 @@
 """Tests for ring1.skill_validator — security validation for skills."""
 
-from ring1.skill_validator import validate_skill, validate_dependencies, ValidationResult, _DEFAULT_ALLOWED_PACKAGES
+from ring1.skill_validator import (
+    validate_skill,
+    validate_skill_local,
+    validate_dependencies,
+    ValidationResult,
+    _DEFAULT_ALLOWED_PACKAGES,
+)
 
 
 class TestValidateSkill:
@@ -160,3 +166,89 @@ class TestValidateDependencies:
         assert "playwright" in _DEFAULT_ALLOWED_PACKAGES
         assert "pandas" in _DEFAULT_ALLOWED_PACKAGES
         assert "pillow" in _DEFAULT_ALLOWED_PACKAGES
+        # Expanded allowlist packages.
+        assert "selenium" in _DEFAULT_ALLOWED_PACKAGES
+        assert "flask" in _DEFAULT_ALLOWED_PACKAGES
+        assert "fastapi" in _DEFAULT_ALLOWED_PACKAGES
+        assert "numpy" in _DEFAULT_ALLOWED_PACKAGES
+        assert "openai" in _DEFAULT_ALLOWED_PACKAGES
+        assert "anthropic" in _DEFAULT_ALLOWED_PACKAGES
+        assert "psutil" in _DEFAULT_ALLOWED_PACKAGES
+        assert "docker" in _DEFAULT_ALLOWED_PACKAGES
+        assert "paramiko" in _DEFAULT_ALLOWED_PACKAGES
+        assert "matplotlib" in _DEFAULT_ALLOWED_PACKAGES
+
+
+class TestValidateSkillLocal:
+    """validate_skill_local() — lenient validation for local/evolved skills."""
+
+    def test_allows_subprocess(self):
+        code = 'import subprocess\nsubprocess.run(["open", "https://example.com"])'
+        result = validate_skill_local(code)
+        assert result.safe is True
+
+    def test_allows_os_system(self):
+        code = 'import os\nos.system("open https://example.com")'
+        result = validate_skill_local(code)
+        assert result.safe is True
+
+    def test_allows_eval_exec(self):
+        code = 'result = eval("1+1")\nexec("x=1")'
+        result = validate_skill_local(code)
+        assert result.safe is True
+
+    def test_allows_socket(self):
+        code = 'import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)'
+        result = validate_skill_local(code)
+        assert result.safe is True
+
+    def test_allows_file_operations(self):
+        code = 'import os\nos.remove("/tmp/test.txt")\nimport shutil\nshutil.rmtree("/tmp/data")'
+        result = validate_skill_local(code)
+        assert result.safe is True
+
+    def test_allows_smtplib(self):
+        code = 'import smtplib\nsmtplib.SMTP("mail.example.com")'
+        result = validate_skill_local(code)
+        assert result.safe is True
+
+    def test_allows_dunder_import(self):
+        code = 'm = __import__("os")'
+        result = validate_skill_local(code)
+        assert result.safe is True
+
+    def test_rejects_setuid(self):
+        code = 'import os\nos.setuid(0)'
+        result = validate_skill_local(code)
+        assert result.safe is False
+        assert any("setuid" in e for e in result.errors)
+
+    def test_rejects_setgid(self):
+        code = 'import os\nos.setgid(0)'
+        result = validate_skill_local(code)
+        assert result.safe is False
+
+    def test_rejects_ctypes_cdll(self):
+        code = 'import ctypes\nctypes.cdll.LoadLibrary("libc.so")'
+        result = validate_skill_local(code)
+        assert result.safe is False
+
+    def test_rejects_rm_rf_root(self):
+        code = '''os.system("rm -rf /")'''
+        result = validate_skill_local(code)
+        assert result.safe is False
+
+    def test_rejects_rmtree_root(self):
+        code = '''shutil.rmtree("/")'''
+        result = validate_skill_local(code)
+        assert result.safe is False
+
+    def test_warns_on_ctypes_import(self):
+        """ctypes import (without cdll) generates warning, not error."""
+        code = 'import ctypes\nprint(ctypes.sizeof(ctypes.c_int))'
+        result = validate_skill_local(code)
+        assert any("ctypes" in w for w in result.warnings)
+
+    def test_empty_rejected(self):
+        result = validate_skill_local("")
+        assert result.safe is False
