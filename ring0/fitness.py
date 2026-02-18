@@ -289,18 +289,27 @@ class FitnessTracker(SQLiteStore):
                 continue
         return fingerprints
 
-    def get_recent_error_signatures(self, limit: int = 5) -> list[str]:
+    def get_recent_error_signatures(self, limit: int = 5, max_gen_age: int = 5) -> list[str]:
         """Return error signatures that persisted across recent generations.
 
-        Finds errors appearing in 2+ of the last *limit* entries, indicating
-        bugs that evolution has failed to fix.
+        Finds errors appearing in 2+ of the last *limit* survived entries
+        **within the last *max_gen_age* generations**, indicating bugs that
+        evolution has failed to fix.  Older entries are ignored so that
+        already-resolved errors don't linger as false positives.
         """
         with self._connect() as con:
+            # Find the latest generation number.
+            latest = con.execute(
+                "SELECT MAX(generation) AS g FROM fitness_log",
+            ).fetchone()
+            min_gen = (latest["g"] or 0) - max_gen_age
+
             rows = con.execute(
                 "SELECT detail FROM fitness_log "
                 "WHERE survived = 1 AND detail IS NOT NULL "
+                "AND generation >= ? "
                 "ORDER BY id DESC LIMIT ?",
-                (limit,),
+                (min_gen, limit),
             ).fetchall()
 
         from collections import Counter
