@@ -346,6 +346,44 @@ class MemoryStore(SQLiteStore):
             importance = min(importance + 0.1, 1.0)
         return round(importance, 2)
 
+    def _is_recent_duplicate(
+        self,
+        entry_type: str,
+        content: str,
+        lookback: int = 10,
+        similarity_threshold: float = 0.85,
+    ) -> bool:
+        """Check if content duplicates a recent entry of the same type.
+
+        For ``task`` entries only exact (case-insensitive) matching is used,
+        because users may phrase legitimately different requests in similar
+        ways.  For all other types fuzzy matching via SequenceMatcher catches
+        near-duplicates such as repetitive reflections or crash logs.
+        """
+        from difflib import SequenceMatcher
+
+        recent = self.get_by_type(entry_type, limit=lookback)
+        content_clean = content.strip().lower()
+
+        for entry in recent:
+            entry_content = entry.get("content", "").strip().lower()
+
+            # Exact match applies to all types.
+            if content_clean == entry_content:
+                return True
+
+            # Fuzzy match only for non-task types with sufficient length.
+            # Short strings (< 50 chars) produce misleadingly high similarity
+            # for legitimately different entries (e.g. "entry-0" vs "entry-1").
+            if entry_type != "task" and len(content_clean) >= 50:
+                similarity = SequenceMatcher(
+                    None, content_clean, entry_content,
+                ).ratio()
+                if similarity >= similarity_threshold:
+                    return True
+
+        return False
+
     def add(
         self,
         generation: int,
@@ -358,21 +396,28 @@ class MemoryStore(SQLiteStore):
 
         Automatically computes importance and extracts keywords if not provided.
         For task entries: content-based scoring + session-start boost.
-        
-        FILTERS OUT system noise at entry point - rejected entries return -1.
+
+        Pipeline: noise filter → quality gate → dedup → insert.
+        Rejected entries return -1.
         """
         # PHASE 1: Noise detection (reject early)
         if _is_system_noise(entry_type, content):
             return -1  # Rejected: system noise
-        
+
         # PHASE 2: Quality scoring
         if importance is None:
             importance = _compute_importance(entry_type, content)
-        
+
         # PHASE 3: Minimum quality threshold (except protected types)
         if entry_type not in ("task", "directive") and importance < _MIN_QUALITY_SCORE:
             return -1  # Rejected: below quality threshold
-        
+
+        # PHASE 4: Deduplication — reject near-duplicate content.
+        # Tasks use exact-match only (user may phrase similar requests differently).
+        # Other types use fuzzy matching.
+        if self._is_recent_duplicate(entry_type, content):
+            return -1  # Rejected: duplicate
+
         keywords = _extract_keywords(content)
         meta_json = json.dumps(metadata or {})
         with self._connect() as con:
@@ -395,20 +440,25 @@ class MemoryStore(SQLiteStore):
         embedding: list[float] | None = None,
     ) -> int:
         """Insert a memory entry with an optional embedding vector.
-        
-        FILTERS OUT system noise at entry point - rejected entries return -1.
+
+        Pipeline: noise filter → quality gate → dedup → insert.
+        Rejected entries return -1.
         """
         # PHASE 1: Noise detection (reject early)
         if _is_system_noise(entry_type, content):
             return -1  # Rejected: system noise
-        
+
         # PHASE 2: Quality scoring
         if importance is None:
             importance = _compute_importance(entry_type, content)
-        
+
         # PHASE 3: Minimum quality threshold (except protected types)
         if entry_type not in ("task", "directive") and importance < _MIN_QUALITY_SCORE:
             return -1  # Rejected: below quality threshold
+
+        # PHASE 4: Deduplication
+        if self._is_recent_duplicate(entry_type, content):
+            return -1  # Rejected: duplicate
         
         keywords = _extract_keywords(content)
         meta_json = json.dumps(metadata or {})
@@ -700,6 +750,37 @@ class MemoryStore(SQLiteStore):
 
         return False
 
+    def deduplicate(self) -> int:
+        """Archive exact-duplicate entries (keep the newest of each group).
+
+        Scans non-archived entries for identical (entry_type, content) pairs
+        and archives all but the most recent (highest id) in each group.
+
+        Returns the number of entries archived.
+        """
+        with self._connect() as con:
+            # Find duplicates — keep the MAX(id) in each group.
+            dupes = con.execute(
+                "SELECT id FROM memory "
+                "WHERE tier != 'archive' "
+                "AND id NOT IN ("
+                "  SELECT MAX(id) FROM memory "
+                "  WHERE tier != 'archive' "
+                "  GROUP BY entry_type, content"
+                ")",
+            ).fetchall()
+
+            if not dupes:
+                return 0
+
+            ids = [r["id"] for r in dupes]
+            placeholders = ",".join("?" * len(ids))
+            con.execute(
+                f"UPDATE memory SET tier = 'archive' WHERE id IN ({placeholders})",
+                ids,
+            )
+            return len(ids)
+
     def compact(self, current_generation: int, curator=None) -> dict:
         """Run tiered compaction: hot→warm, warm→cold (LLM or rules), cold cleanup.
 
@@ -709,7 +790,10 @@ class MemoryStore(SQLiteStore):
 
         Returns dict with counts: hot_to_warm, warm_to_cold, deleted, llm_curated.
         """
-        result = {"hot_to_warm": 0, "warm_to_cold": 0, "deleted": 0, "llm_curated": 0}
+        result = {"hot_to_warm": 0, "warm_to_cold": 0, "deleted": 0, "llm_curated": 0, "deduped": 0}
+
+        # --- Phase 0: Deduplication ---
+        result["deduped"] = self.deduplicate()
 
         # --- Phase 1: Hot → Warm (rule-driven) ---
         result["hot_to_warm"] = self._compact_hot_to_warm(current_generation)
@@ -737,12 +821,12 @@ class MemoryStore(SQLiteStore):
 
     def _compact_hot_to_warm(self, current_generation: int) -> int:
         """Demote old, low-importance hot entries to warm tier."""
-        threshold_gen = current_generation - 10
+        threshold_gen = current_generation - 5
         with self._connect() as con:
-            # Get hot entries older than 10 generations with importance < 0.7
+            # Get hot entries older than 5 generations with importance < 0.6
             rows = con.execute(
                 "SELECT * FROM memory WHERE tier = 'hot' "
-                "AND generation <= ? AND importance < 0.7 "
+                "AND generation <= ? AND importance < 0.6 "
                 "ORDER BY entry_type, importance DESC",
                 (threshold_gen,),
             ).fetchall()

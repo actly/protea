@@ -483,6 +483,7 @@ class TestCompact:
         assert "warm_to_cold" in result
         assert "deleted" in result
         assert "llm_curated" in result
+        assert "deduped" in result
 
     def test_compact_with_curator(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
@@ -700,3 +701,170 @@ class TestArchiveTier:
         assert stats["total"] == 2
         assert stats["by_tier"].get("archive") == 1
         assert stats["by_tier"].get("hot") == 1
+
+
+class TestIsRecentDuplicate:
+    """_is_recent_duplicate() rejects duplicate content at write time."""
+
+    def test_exact_duplicate_rejected(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "reflection", "server crashed due to OOM")
+        assert store._is_recent_duplicate("reflection", "server crashed due to OOM")
+
+    def test_case_insensitive_match(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "reflection", "Server Crashed")
+        assert store._is_recent_duplicate("reflection", "server crashed")
+
+    def test_fuzzy_match_for_non_task(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(
+            1, "reflection",
+            "tasks.jsonl not found in the working directory, this caused generation failure",
+        )
+        # Similar but not identical (>50 chars to trigger fuzzy)
+        assert store._is_recent_duplicate(
+            "reflection",
+            "tasks.jsonl not found in the current working directory, this caused generation failure",
+        )
+
+    def test_no_fuzzy_match_for_task(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "task", "帮我分析一下 memory 的内容", importance=0.7)
+        # Similar phrasing but tasks should only exact-match
+        assert not store._is_recent_duplicate(
+            "task", "帮我分析一下 memory 里面的内容"
+        )
+
+    def test_exact_task_duplicate_rejected(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "task", "commit and push", importance=0.7)
+        assert store._is_recent_duplicate("task", "commit and push")
+
+    def test_short_content_no_fuzzy(self, tmp_path):
+        """Short non-task content uses exact match only (no fuzzy)."""
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "observation", "entry-0")
+        # Very similar but not exact — should NOT be flagged as duplicate
+        assert not store._is_recent_duplicate("observation", "entry-1")
+
+    def test_different_type_not_duplicate(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "reflection", "OOM crash on gen 100")
+        # Same content but different type → not a duplicate
+        assert not store._is_recent_duplicate("crash_log", "OOM crash on gen 100")
+
+    def test_no_entries_not_duplicate(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        assert not store._is_recent_duplicate("reflection", "anything")
+
+    def test_add_rejects_duplicate(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        rid1 = store.add(1, "reflection", "ring2 timed out after 600s")
+        rid2 = store.add(2, "reflection", "ring2 timed out after 600s")
+        assert rid1 > 0
+        assert rid2 == -1  # Rejected
+
+    def test_add_with_embedding_rejects_duplicate(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        rid1 = store.add_with_embedding(1, "reflection", "ring2 timed out", embedding=[0.1, 0.2])
+        rid2 = store.add_with_embedding(2, "reflection", "ring2 timed out", embedding=[0.3, 0.4])
+        assert rid1 > 0
+        assert rid2 == -1
+
+
+class TestDeduplicate:
+    """deduplicate() archives exact-duplicate entries in the database."""
+
+    def test_removes_exact_duplicates(self, tmp_path):
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        # Insert duplicates directly via SQL (bypassing add() dedup)
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        for i in range(3):
+            con.execute(
+                "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords) "
+                "VALUES (?, 'task', 'duplicate content', '{}', 0.5, 'hot', '')",
+                (i,),
+            )
+        con.commit()
+        con.close()
+
+        archived = store.deduplicate()
+        assert archived == 2  # 3 copies → keep 1, archive 2
+        hot = store.get_by_tier("hot")
+        assert sum(1 for e in hot if e["content"] == "duplicate content") == 1
+
+    def test_no_duplicates_returns_zero(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "reflection", "unique entry one")
+        store.add(2, "reflection", "unique entry two is different")
+        assert store.deduplicate() == 0
+
+    def test_keeps_newest(self, tmp_path):
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        for gen in [10, 20, 30]:
+            con.execute(
+                "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords) "
+                "VALUES (?, 'reflection', 'same reflection', '{}', 0.5, 'hot', '')",
+                (gen,),
+            )
+        con.commit()
+        con.close()
+
+        store.deduplicate()
+        hot = [e for e in store.get_by_tier("hot") if e["content"] == "same reflection"]
+        assert len(hot) == 1
+        assert hot[0]["generation"] == 30  # Newest kept
+
+    def test_compact_includes_dedup(self, tmp_path):
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        for i in range(2):
+            con.execute(
+                "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords) "
+                "VALUES (1, 'observation', 'dup obs', '{}', 0.5, 'hot', '')",
+            )
+        con.commit()
+        con.close()
+
+        result = store.compact(current_generation=50)
+        assert result["deduped"] == 1
+        assert "deduped" in result
+
+
+class TestCompactThresholds:
+    """Verify tightened hot→warm compaction thresholds."""
+
+    def test_importance_059_gets_demoted(self, tmp_path):
+        """Entries with importance < 0.6 and old enough should be demoted."""
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "observation", "low importance entry", importance=0.59)
+        result = store.compact(current_generation=10)
+        assert result["hot_to_warm"] > 0
+
+    def test_importance_060_stays_hot(self, tmp_path):
+        """Entries with importance >= 0.6 should remain hot."""
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "reflection", "moderate importance", importance=0.6)
+        result = store.compact(current_generation=10)
+        hot = store.get_by_tier("hot")
+        assert any(e["content"] == "moderate importance" for e in hot)
+
+    def test_generation_gap_5(self, tmp_path):
+        """Entries within 5 generations should not be compacted."""
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(6, "observation", "recent low importance", importance=0.3)
+        result = store.compact(current_generation=10)
+        hot = store.get_by_tier("hot")
+        assert any(e["content"] == "recent low importance" for e in hot)
+
+    def test_generation_gap_6_gets_compacted(self, tmp_path):
+        """Entries older than 5 generations with low importance get compacted."""
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(4, "observation", "old low importance entry", importance=0.3)
+        result = store.compact(current_generation=10)
+        assert result["hot_to_warm"] > 0
