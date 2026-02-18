@@ -47,6 +47,32 @@ _IMPORTANCE_BASE: dict[str, float] = {
 
 _KEYWORD_RE = re.compile(r"[a-zA-Z0-9_]+")
 
+# ============= SYSTEM NOISE DETECTION =============
+# Patterns for detecting system-generated noise that should be filtered out.
+_NOISE_PATTERNS: list[re.Pattern[str]] = [
+    # Process termination signals (low value)
+    re.compile(r"killed by signal (SIGTERM|SIGKILL|SIGINT)", re.IGNORECASE),
+    re.compile(r"Reason: killed by signal", re.IGNORECASE),
+    re.compile(r"Gen \d+ died after \d+s", re.IGNORECASE),
+    
+    # ASCII art / game output
+    re.compile(r"^[·●\s]{20,}$", re.MULTILINE),  # Lines with only dots/circles
+    re.compile(r"(█{3,}|▓{3,}|░{3,})", re.IGNORECASE),  # Block characters
+    
+    # Empty or near-empty output logs
+    re.compile(r"^--- Last output ---\s*$", re.MULTILINE),
+    re.compile(r"^Step \d+:\s*$", re.MULTILINE),
+    
+    # Heartbeat/health check spam
+    re.compile(r"heartbeat.*ok|health check.*passed", re.IGNORECASE),
+    
+    # Generic process lifecycle events (without context)
+    re.compile(r"^(started|stopped|running|idle)\s*$", re.IGNORECASE),
+]
+
+# Minimum quality threshold: entries scoring below this are rejected.
+_MIN_QUALITY_SCORE = 0.15
+
 # Patterns for detecting low-value follow-up messages (operational commands).
 # Chinese + English operational verbs / short commands.
 _FOLLOWUP_PATTERNS: list[re.Pattern[str]] = [
@@ -173,6 +199,72 @@ def _compute_importance(entry_type: str, content: str) -> float:
     return round(base, 2)
 
 
+def _is_system_noise(entry_type: str, content: str) -> bool:
+    """Detect if content is system-generated noise that should be filtered out.
+    
+    Returns True if content matches noise patterns and should be rejected.
+    
+    Protection rules:
+    - Never filter 'task' entries (user input is sacred)
+    - Never filter 'directive' entries (high-value instructions)
+    """
+    # CRITICAL: Never filter user tasks or directives
+    if entry_type in ("task", "directive"):
+        return False
+    
+    # Additional heuristics for crash_log (special handling before general pattern matching)
+    if entry_type == "crash_log":
+        content_lower = content.lower()
+        
+        # Pure termination signals without context → noise
+        if "killed by signal" in content_lower:
+            # Check if there's ANY contextual information beyond the signal
+            lines = [line.strip() for line in content.split('\n') if line.strip()]
+            
+            # Count lines that provide actual context (not just noise patterns or metadata)
+            contextual_lines = [
+                line for line in lines 
+                if not any(p.search(line) for p in _NOISE_PATTERNS)
+                and not line.lower().startswith("gen ")
+                and not line.lower().startswith("reason:")
+                and len(line) > 10  # Exclude very short lines
+            ]
+            
+            # If we have contextual lines OR context keywords, keep it
+            has_context_keywords = any(
+                keyword in content_lower 
+                for keyword in ["context:", "user", "during", "while", "because", "requested"]
+            )
+            
+            # Reject only if: short content + no context lines + no context keywords
+            if len(content) < 80 and len(contextual_lines) == 0 and not has_context_keywords:
+                return True
+    
+    if entry_type == "evolution_intent":
+        content_lower = content.lower()
+        
+        # Generic "survived" or "error" with no detail → noise
+        noise_phrases = [
+            "optimize: survived",
+            "repair: error",
+            "repair: ⚠",
+        ]
+        
+        if any(phrase in content_lower for phrase in noise_phrases):
+            # Must have additional context to be valuable
+            if len(content) < 50:  # Too short to have useful detail
+                return True
+    
+    # General noise pattern check for other entry types
+    # (crash_log and evolution_intent were handled above with special logic)
+    if entry_type not in ("crash_log", "evolution_intent"):
+        for pattern in _NOISE_PATTERNS:
+            if pattern.search(content):
+                return True
+    
+    return False
+
+
 def _extract_keywords(content: str) -> str:
     """Extract searchable keywords from content."""
     tokens = _KEYWORD_RE.findall(content.lower())
@@ -266,9 +358,21 @@ class MemoryStore(SQLiteStore):
 
         Automatically computes importance and extracts keywords if not provided.
         For task entries: content-based scoring + session-start boost.
+        
+        FILTERS OUT system noise at entry point - rejected entries return -1.
         """
+        # PHASE 1: Noise detection (reject early)
+        if _is_system_noise(entry_type, content):
+            return -1  # Rejected: system noise
+        
+        # PHASE 2: Quality scoring
         if importance is None:
             importance = _compute_importance(entry_type, content)
+        
+        # PHASE 3: Minimum quality threshold (except protected types)
+        if entry_type not in ("task", "directive") and importance < _MIN_QUALITY_SCORE:
+            return -1  # Rejected: below quality threshold
+        
         keywords = _extract_keywords(content)
         meta_json = json.dumps(metadata or {})
         with self._connect() as con:
@@ -290,9 +394,22 @@ class MemoryStore(SQLiteStore):
         importance: float | None = None,
         embedding: list[float] | None = None,
     ) -> int:
-        """Insert a memory entry with an optional embedding vector."""
+        """Insert a memory entry with an optional embedding vector.
+        
+        FILTERS OUT system noise at entry point - rejected entries return -1.
+        """
+        # PHASE 1: Noise detection (reject early)
+        if _is_system_noise(entry_type, content):
+            return -1  # Rejected: system noise
+        
+        # PHASE 2: Quality scoring
         if importance is None:
             importance = _compute_importance(entry_type, content)
+        
+        # PHASE 3: Minimum quality threshold (except protected types)
+        if entry_type not in ("task", "directive") and importance < _MIN_QUALITY_SCORE:
+            return -1  # Rejected: below quality threshold
+        
         keywords = _extract_keywords(content)
         meta_json = json.dumps(metadata or {})
         emb_json = json.dumps(embedding) if embedding else ""
